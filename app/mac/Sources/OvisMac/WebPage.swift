@@ -65,27 +65,30 @@ final class WebPageController: NSObject, ObservableObject {
     let webView: WKWebView
     private let origin: URL
     private weak var model: Model?
-    /// The page that opened this one; nil for the main window's.
-    private weak var opener: WebPageController?
-    /// A popup's own window, made when its first Ovis page starts loading.
+    /// A window the page opened, rather than the main window's page.
+    private let isPopup: Bool
+    /// A popup's own window, made once its first Ovis page is committed.
     private var window: NSWindow?
-    /// Popups this page opened, kept until their window closes.
-    private var popups: [WebPageController] = []
+    /// Every popup, until its window closes or, for one that never got a window, until it is done: they
+    /// outlive the page that opened them, which a restart or a new address replaces.
+    private static var popups: [WebPageController] = []
+    /// Download destinations handed out and not finished yet, so two downloads of one name get two files.
+    private static var reserved: Set<String> = []
     private var destinations: [ObjectIdentifier: URL] = [:]
     private var reloads: AnyCancellable?
 
     /// A popup gets the configuration WebKit hands over for it; the main window's page makes its own.
-    init(origin: URL, model: Model, configuration: WKWebViewConfiguration? = nil, opener: WebPageController? = nil) {
+    init(origin: URL, model: Model, popupConfiguration: WKWebViewConfiguration? = nil) {
         self.origin = origin
         self.model = model
-        self.opener = opener
-        webView = OvisWebView(frame: .zero, configuration: configuration ?? Self.configuration())
+        isPopup = popupConfiguration != nil
+        webView = OvisWebView(frame: .zero, configuration: popupConfiguration ?? Self.configuration())
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.underPageBackgroundColor = .windowBackgroundColor
         // a popup is loaded by WebKit, with the request that opened it
-        guard opener == nil else { return }
+        guard !isPopup else { return }
         model.page = self
         reloads = model.$reloads.dropFirst().sink { [weak self] _ in self?.reload() }
         webView.load(URLRequest(url: origin))
@@ -121,11 +124,30 @@ final class WebPageController: NSObject, ObservableObject {
         url.scheme?.lowercased() == origin.scheme?.lowercased() && url.host?.lowercased() == origin.host?.lowercased() && url.port == origin.port
     }
 
-    /// Another site, a mail link or another app's link. A file (one dropped where the page takes none,
+    /// Another site or a mail link opens where the system opens it. Another app's link (a site in a web
+    /// panel can make any) asks first, as Safari does. A file (one dropped where the page takes none,
     /// which would replace the page) and the page's own data stay where they are.
     private func openElsewhere(_ url: URL) {
-        guard let scheme = url.scheme?.lowercased(), !["file", "data", "blob", "javascript", "about"].contains(scheme) else { return }
-        NSWorkspace.shared.open(url)
+        guard let scheme = url.scheme?.lowercased() else { return }
+        if ["http", "https", "mailto"].contains(scheme) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        guard !["file", "data", "blob", "javascript", "about"].contains(scheme),
+              let app = NSWorkspace.shared.urlForApplication(toOpen: url) else { return }
+        let name = FileManager.default.displayName(atPath: app.path)
+        let alert = NSAlert()
+        alert.messageText = L("Open this link in “\(name)”?", "이 링크를 “\(name)”에서 열까요?")
+        alert.informativeText = String(url.absoluteString.prefix(300))
+        alert.addButton(withTitle: L("Open", "열기"))
+        alert.addButton(withTitle: L("Cancel", "취소"))
+        guard let window = webView.window else {
+            if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
+            return
+        }
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
+        }
     }
 
     private func failed(_ error: Error) {
@@ -134,7 +156,7 @@ final class WebPageController: NSObject, ObservableObject {
         if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled { return }
         // WebKit's "frame load interrupted" (102) and "plug-in handled load" (204)
         if error.domain == "WebKitErrorDomain" && (error.code == 102 || error.code == 204) { return }
-        guard opener == nil else { return }
+        guard !isPopup else { return }
         state = .failed(error.localizedDescription)
         model?.pageFailed()
     }
@@ -151,9 +173,17 @@ final class WebPageController: NSObject, ObservableObject {
         self.window = window
     }
 
-    /// Ends a popup: its window closes, or it had none yet.
+    /// Ends a popup: its window closes, or one that never got a window lets go once its downloads end.
+    /// Later, not inside the WebKit callback that asked for it.
     private func closePopup() {
-        if let window { window.close() } else { opener?.popups.removeAll { $0 === self } }
+        DispatchQueue.main.async { [self] in
+            if let window, window.isVisible {
+                // its windowWillClose comes back here
+                window.close()
+            } else if destinations.isEmpty {
+                Self.popups.removeAll { $0 === self }
+            }
+        }
     }
 }
 
@@ -173,14 +203,13 @@ extension WebPageController: WKNavigationDelegate {
             return
         }
         if isOvis(url) || url.absoluteString == "about:blank" {
-            if opener != nil && isOvis(url) { showWindow() }
             decisionHandler(.allow)
             return
         }
         decisionHandler(.cancel)
         openElsewhere(url)
         // window.open() then an address elsewhere (a sign-in page): the browser has it, the popup is not needed
-        if opener != nil && window == nil { closePopup() }
+        if isPopup && window == nil { closePopup() }
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
@@ -196,10 +225,16 @@ extension WebPageController: WKNavigationDelegate {
         download.delegate = self
     }
 
+    /// A popup's window opens once an Ovis page is really coming: a new tab that turns into a download
+    /// leaves no empty window behind.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        if isPopup, let url = webView.url, isOvis(url) { showWindow() }
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         state = .shown
         if let window, let title = webView.title, !title.isEmpty { window.title = title }
-        if opener == nil { model?.pageLoaded() }
+        if !isPopup { model?.pageLoaded() }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -222,16 +257,19 @@ extension WebPageController: WKUIDelegate {
             openElsewhere(url)
             return nil
         }
-        guard let model else { return nil }
-        // an Ovis page gets a window of its own; an empty one waits for the address the page gives it
-        let popup = WebPageController(origin: origin, model: model, configuration: configuration, opener: self)
-        popups.append(popup)
-        if let url, isOvis(url) { popup.showWindow() }
+        // only the Ovis page itself opens app windows: a site in a web panel could otherwise fill a blank
+        // one by script, and it would stay hidden
+        let source = navigationAction.sourceFrame
+        guard let model, source.isMainFrame, source.securityOrigin.host == origin.host,
+              source.securityOrigin.port == (origin.port ?? 0) else { return nil }
+        // an empty one waits for the address the page gives it
+        let popup = WebPageController(origin: origin, model: model, popupConfiguration: configuration)
+        Self.popups.append(popup)
         return popup.webView
     }
 
     func webViewDidClose(_ webView: WKWebView) {
-        if opener != nil { closePopup() }
+        if isPopup { closePopup() }
     }
 
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
@@ -262,20 +300,29 @@ extension WebPageController: WKDownloadDelegate {
         let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
         let name = (suggestedFilename as NSString).lastPathComponent
         let destination = Self.freeName(name.isEmpty ? "download" : name, in: folder)
+        Self.reserved.insert(destination.path)
         destinations[ObjectIdentifier(download)] = destination
         completionHandler(destination)
     }
 
     func downloadDidFinish(_ download: WKDownload) {
-        guard let file = destinations.removeValue(forKey: ObjectIdentifier(download)) else { return }
+        guard let file = ended(download) else { return }
         // the Dock's Downloads stack bounces, as it does for a browser's download
         DistributedNotificationCenter.default().post(name: Notification.Name("com.apple.DownloadFileFinished"), object: file.path)
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        destinations.removeValue(forKey: ObjectIdentifier(download))
-        guard let window = webView.window else { return }
+        _ = ended(download)
+        guard let window = webView.window ?? model?.page?.webView.window else { return }
         NSAlert(error: error).beginSheetModal(for: window)
+    }
+
+    /// Lets go of a download's file name, and of a popup that only existed for the download.
+    private func ended(_ download: WKDownload) -> URL? {
+        let file = destinations.removeValue(forKey: ObjectIdentifier(download))
+        if let file { Self.reserved.remove(file.path) }
+        if isPopup && window?.isVisible != true { closePopup() }
+        return file
     }
 
     /// "name.ext", then "name 2.ext", "name 3.ext"…
@@ -284,7 +331,7 @@ extension WebPageController: WKDownloadDelegate {
         let ext = (name as NSString).pathExtension
         var candidate = folder.appendingPathComponent(name)
         var number = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
+        while FileManager.default.fileExists(atPath: candidate.path) || reserved.contains(candidate.path) {
             candidate = folder.appendingPathComponent(ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)")
             number += 1
         }
@@ -294,6 +341,7 @@ extension WebPageController: WKDownloadDelegate {
 
 extension WebPageController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
-        opener?.popups.removeAll { $0 === self }
+        // a download still running keeps its popup until it ends
+        closePopup()
     }
 }
