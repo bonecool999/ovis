@@ -79,10 +79,9 @@ final class Model: ObservableObject {
     /// Keeps the main window on a live page for as long as the app runs. A running page reconnects by
     /// itself to a server that comes back, and tells the user itself when the server it meets was
     /// updated; a page that did not load, or whose code never started, loads again once the server
-    /// answers. Every fifth miss (about
-    /// 15 s) reads the status again: the server may be on another port now, or stopped, and then the
-    /// window shows Start. A server started outside the app (a terminal, herdr's own start) is picked up
-    /// the same way.
+    /// answers. Every fifth miss (about 15 s) reads the status again: the server may be on another port
+    /// now, or stopped, and then the window shows Start. A server started outside the app (a terminal,
+    /// herdr's own start) is picked up the same way.
     func monitor() async {
         var misses = 0
         while !Task.isCancelled {
@@ -97,7 +96,7 @@ final class Model: ObservableObject {
             if let origin = status?.origin { up = await answers(origin) }
             guard work == started else { continue }
             if up {
-                let wasGone = misses >= 2
+                let wasGone = misses >= 1
                 misses = 0
                 if webOrigin == nil {
                     await refresh()

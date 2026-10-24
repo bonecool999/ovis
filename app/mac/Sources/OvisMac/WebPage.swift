@@ -327,7 +327,8 @@ extension WebPageController: WKDownloadDelegate {
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         _ = ended(download)
-        guard let window = webView.window ?? model?.page?.webView.window else { return }
+        // a popup whose window was closed shows it in the main window
+        guard let window = (closed ? nil : webView.window) ?? model?.page?.webView.window else { return }
         NSAlert(error: error).beginSheetModal(for: window)
     }
 
