@@ -69,6 +69,8 @@ final class WebPageController: NSObject, ObservableObject {
     private let isPopup: Bool
     /// A popup's own window, made once its first Ovis page is committed.
     private var window: NSWindow?
+    /// The popup's window was closed. A minimized or hidden one is not visible either, and is still open.
+    private var closed = false
     /// Every popup, until its window closes or, for one that never got a window, until it is done: they
     /// outlive the page that opened them, which a restart or a new address replaces.
     private static var popups: [WebPageController] = []
@@ -113,6 +115,14 @@ final class WebPageController: NSObject, ObservableObject {
         return "Version/\(version) Safari/605.1.15 OvisMac/\(app)"
     }()
 
+    /// After the server was gone: a page whose code never started (its HTML loaded, its scripts did not)
+    /// has nothing that reconnects, so it loads again. A running page keeps what is open in it.
+    func reloadIfNotStarted() {
+        webView.evaluateJavaScript("document.getElementById('root')?.childElementCount ?? 0") { [weak self] result, _ in
+            if (result as? Int ?? 0) == 0 { self?.reload() }
+        }
+    }
+
     /// Loads the page again where it is, or from the start when it is not on an Ovis page.
     func reload() {
         if state != .shown { state = .loading }
@@ -156,7 +166,11 @@ final class WebPageController: NSObject, ObservableObject {
         if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled { return }
         // WebKit's "frame load interrupted" (102) and "plug-in handled load" (204)
         if error.domain == "WebKitErrorDomain" && (error.code == 102 || error.code == 204) { return }
-        guard !isPopup else { return }
+        guard !isPopup else {
+            // a new tab that could not load has no window to show its error in
+            if window == nil { closePopup() }
+            return
+        }
         state = .failed(error.localizedDescription)
         model?.pageFailed()
     }
@@ -177,7 +191,7 @@ final class WebPageController: NSObject, ObservableObject {
     /// Later, not inside the WebKit callback that asked for it.
     private func closePopup() {
         DispatchQueue.main.async { [self] in
-            if let window, window.isVisible {
+            if let window, !closed {
                 // its windowWillClose comes back here
                 window.close()
             } else if destinations.isEmpty {
@@ -321,7 +335,7 @@ extension WebPageController: WKDownloadDelegate {
     private func ended(_ download: WKDownload) -> URL? {
         let file = destinations.removeValue(forKey: ObjectIdentifier(download))
         if let file { Self.reserved.remove(file.path) }
-        if isPopup && window?.isVisible != true { closePopup() }
+        if isPopup && (window == nil || closed) { closePopup() }
         return file
     }
 
@@ -342,6 +356,7 @@ extension WebPageController: WKDownloadDelegate {
 extension WebPageController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         // a download still running keeps its popup until it ends
+        closed = true
         closePopup()
     }
 }

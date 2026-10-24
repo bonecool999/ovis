@@ -25,11 +25,12 @@ cookies and drafts stay in the app's own WebKit store, apart from any browser's.
   the app's: macOS asks once, with the text in `Info.plist`, and a signed build carries the
   hardened runtime's `com.apple.security.device.audio-input` entitlement (`Ovis.entitlements`).
 - The app checks the server every 3 seconds (`/api/health?scope=bridge`, which leaves herdr alone,
-  and only Ovis's own answer counts). A loaded page reconnects by itself when the server comes back,
-  keeping what was open in it, and says itself when the server it meets was updated; a page that did
-  not load loads again once the server answers. When the server is still gone after about 15
-  seconds, the window shows the setup's Start, and it goes back to Ovis by itself once the server
-  runs again, however it was started.
+  and only Ovis's own answer counts). A running page reconnects by itself when the server is back
+  within about 15 seconds, keeping what was open in it, and says itself when the server it meets was
+  updated; a page that did not load, or whose code never started, loads again once the server
+  answers. When the server is still gone after about 15 seconds, the window shows the setup's Start
+  (the page and what was open in it go), and it goes back to Ovis by itself once the server runs
+  again, however it was started.
 - Another app's link (a site in a web panel can make one) asks before it opens that app, as Safari
   does, and only the Ovis page itself opens app windows.
 - The user agent ends like Safari's, then `OvisMac/<version>`: the terminal's Korean input
