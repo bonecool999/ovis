@@ -23,6 +23,16 @@ final class Model: ObservableObject {
     @Published var phase: Phase = .checking
     @Published var log: [String] = []
     @Published var status: Status?
+    /// The Ovis page the main window shows: the running server's address, nil while it is not running.
+    @Published private(set) var webOrigin: URL?
+    /// Bumped to load the page again: View > Reload, or the server answering again after it was gone.
+    @Published private(set) var reloads = 0
+    /// An Install from this app is done: the phone's QR code opens next to the page.
+    @Published var phoneSetupRequested = false
+    /// The main window's page, for Open in Browser.
+    weak var page: WebPageController?
+    /// The page did not load, or the server stopped answering it: it loads again once the server answers.
+    private var offline = false
     private var pluginRoot: String?
     /// The id the plugin is installed under: an install of an older release keeps the old one.
     private var pluginID = Ovis.pluginID
@@ -31,17 +41,79 @@ final class Model: ObservableObject {
 
     var logText: String { log.joined(separator: "\n") }
 
+    /// Install, Restart or Remove is under way, and waits for the server itself.
+    var busy: Bool {
+        if case .working = phase { return true }
+        return false
+    }
+
     func refresh() async {
         guard FileManager.default.isExecutableFile(atPath: Paths.herdr), let plugin = await findPlugin() else {
             pluginRoot = nil
             status = nil
+            webOrigin = nil
             phase = .notInstalled
             return
         }
         pluginID = plugin.id
         pluginRoot = plugin.root
-        status = await readStatus(root: plugin.root)
+        let status = await readStatus(root: plugin.root)
+        self.status = status
+        let origin = status.running ? status.origin : nil
+        if origin != webOrigin {
+            // a page at a new address loads by itself
+            webOrigin = origin
+            offline = false
+        }
         phase = .installed
+    }
+
+    /// Keeps the main window on a live page for as long as the app runs. The page reconnects by itself to
+    /// a server that is back within seconds; this covers the rest. A page that did not load, or a server
+    /// that missed two checks in a row (a restart, an update), loads again once the server answers, so
+    /// the page matches the server. Every fifth miss reads the status again: the server may be on another
+    /// port now, or stopped, and then the window shows Start. A server started outside the app (a
+    /// terminal, herdr's own start) is picked up the same way.
+    func monitor() async {
+        var misses = 0
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            // Install, Restart and Remove wait for the server themselves, and a failure stays on screen
+            guard phase == .installed || phase == .notInstalled else {
+                misses = 0
+                continue
+            }
+            if let origin = status?.origin, await answers(origin) {
+                misses = 0
+                if webOrigin == nil {
+                    await refresh()
+                } else if offline {
+                    offline = false
+                    reloads += 1
+                }
+                continue
+            }
+            misses += 1
+            if misses >= 2 { offline = true }
+            if misses % 5 == 0 { await refresh() }
+        }
+    }
+
+    func pageFailed() {
+        offline = true
+    }
+
+    func pageLoaded() {
+        offline = false
+    }
+
+    func reload() {
+        reloads += 1
+    }
+
+    /// The page as it is now (a pane's address), or the server's own address.
+    func openInBrowser() {
+        if let url = page?.webView.url ?? webOrigin ?? status?.origin { open(url) }
     }
 
     func retry() async {
@@ -77,12 +149,15 @@ final class Model: ObservableObject {
             return
         }
         await waitUntilRunning()
+        if webOrigin != nil { phoneSetupRequested = true }
     }
 
     func restart() async {
         retryRestarts = true
         log = []
         phase = .working(L("Restarting…", "다시 시작하는 중…"))
+        // the page loads again once the server answers, so it matches the server that started
+        offline = true
         if await herdrRunning(), let root = pluginRoot {
             // `herdr plugin action invoke` only queues the action, so a start invoked right after a stop
             // finds the old server still up and fails: run them here and wait for each, with the locale
@@ -190,6 +265,14 @@ final class Model: ObservableObject {
             status.phoneURL = (tailscale["serving_url"] as? String).flatMap(URL.init(string:))
         }
         return status
+    }
+
+    /// The server's health check that leaves herdr alone (`scope=bridge`); it answers without a sign-in.
+    private func answers(_ origin: URL) async -> Bool {
+        guard let url = URL(string: "api/health?scope=bridge", relativeTo: origin)?.absoluteURL else { return false }
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 2)
+        guard let (_, response) = try? await URLSession.shared.data(for: request) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
     private func herdrRunning() async -> Bool {
