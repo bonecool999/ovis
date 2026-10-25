@@ -1012,6 +1012,32 @@ Press enter to confirm or esc to cancel
     const shown = Object.fromEntries(Object.entries(screens).map(([name, screen]) => [name, [codexQueuedPrompt(screen, asked) !== null, codexQuestionsCollapsed(screen)]]));
     expect(shown).toEqual({ collapsed: [true, true], queuedMessage: [false, false], somethingBelow: [false, false], noHint: [false, false], numberedRow: [false, false], none: [false, false] });
   });
+
+  test("Ultra's » main prompt still sits under the queue, while a numbered row there does not", () => {
+    const asked = [{ key: "call_u:0", title: "Which dataset?", options: ["LM-O", "YCB-V"] }];
+    const collapsed = `
+• Queued follow-up inputs
+  ? 1 question · 8s
+    alt+↑ to answer
+» Ask Codex to do anything
+  GPT-6-Sol ultra · ~/lab · Context 97% left
+`;
+    for (const screen of [collapsed, collapsed.replace("alt+↑", "shift+←"), `${collapsed}  ? for shortcuts\n`]) {
+      expect(codexQuestionsCollapsed(screen)).toBe(true);
+      expect(codexQueuedPrompt(screen, asked)).toMatchObject({ queued: "collapsed", title: "Question", question: "Which dataset?" });
+    }
+    expect(codexQueuedPrompt(collapsed.replace("1 question", "2 questions"), [...asked, { key: "call_u:1", title: "Any notes?", options: [] }]))
+      .toMatchObject({ title: "Question 1 of 2", question: "Which dataset?" });
+    for (const screen of [
+      collapsed.replace("» Ask Codex to do anything", "» 1. Allow\n  2. Deny"),
+      collapsed.replace("» Ask Codex to do anything", "  Allow network access?\n» Ask Codex to do anything"),
+      collapsed.replace("    alt+↑ to answer\n", ""),
+      "» Ask Codex to do anything\n",
+    ]) {
+      expect(codexQuestionsCollapsed(screen)).toBe(false);
+      expect(codexQueuedPrompt(screen, asked)).toBeNull();
+    }
+  });
 });
 
 describe("interactive prompt answers", () => {
