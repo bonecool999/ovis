@@ -134,6 +134,10 @@ final class WebPageController: NSObject, ObservableObject {
         url.scheme?.lowercased() == origin.scheme?.lowercased() && url.host?.lowercased() == origin.host?.lowercased() && url.port == origin.port
     }
 
+    private func isOvis(_ origin: WKSecurityOrigin) -> Bool {
+        origin.protocol == self.origin.scheme && origin.host == self.origin.host && origin.port == (self.origin.port ?? 0)
+    }
+
     /// Another site or a mail link opens where the system opens it. Another app's link (a site in a web
     /// panel can make any) asks first, as Safari does. A file (one dropped where the page takes none,
     /// which would replace the page) and the page's own data stay where they are.
@@ -204,7 +208,14 @@ final class WebPageController: NSObject, ObservableObject {
 extension WebPageController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         if navigationAction.shouldPerformDownload {
-            decisionHandler(.download)
+            // only an Ovis page saves into Downloads by itself; a site's (a web panel's) download goes to
+            // the browser, which asks as it does for any site
+            if let source = navigationAction.sourceFrame as WKFrameInfo?, isOvis(source.securityOrigin) {
+                decisionHandler(.download)
+            } else {
+                decisionHandler(.cancel)
+                navigationAction.request.url.map(openElsewhere)
+            }
             return
         }
         guard let url = navigationAction.request.url else {
@@ -228,7 +239,19 @@ extension WebPageController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         let disposition = (navigationResponse.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition") ?? ""
-        decisionHandler(disposition.lowercased().hasPrefix("attachment") || !navigationResponse.canShowMIMEType ? .download : .allow)
+        guard disposition.lowercased().hasPrefix("attachment") || !navigationResponse.canShowMIMEType else {
+            decisionHandler(.allow)
+            return
+        }
+        // a page (main frame) is always Ovis's own; a file a frame inside it shows is saved only when it
+        // comes from the Ovis server, and a site's goes to the browser
+        let url = navigationResponse.response.url
+        if navigationResponse.isForMainFrame || url.map(isOvis) == true {
+            decisionHandler(.download)
+        } else {
+            decisionHandler(.cancel)
+            url.map(openElsewhere)
+        }
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
@@ -303,8 +326,7 @@ extension WebPageController: WKUIDelegate {
     /// Dictation in the Ovis page: macOS asks once whether the app may use the microphone
     /// (NSMicrophoneUsageDescription). Anything else, such as a site in a web panel, is asked about.
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        let ovis = frame.isMainFrame && origin.protocol == self.origin.scheme && origin.host == self.origin.host && origin.port == (self.origin.port ?? 0)
-        decisionHandler(ovis && type == .microphone ? .grant : .prompt)
+        decisionHandler(frame.isMainFrame && isOvis(origin) && type == .microphone ? .grant : .prompt)
     }
 }
 

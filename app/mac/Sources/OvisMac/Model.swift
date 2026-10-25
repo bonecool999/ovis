@@ -1,6 +1,13 @@
 import AppKit
 import Foundation
 
+/// Ends a request at its redirect: the redirect's own response is the answer.
+private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
 struct Status: Equatable {
     var running: Bool
     var origin: URL?
@@ -285,11 +292,12 @@ final class Model: ObservableObject {
 
     /// The server's health check that leaves herdr alone (`scope=bridge`); it answers without a sign-in.
     /// Only Ovis's own answer counts, as in `scripts/plugin.ts`: another program can take a port Ovis
-    /// left, and its 200 would hide the server's new address.
+    /// left, and its 200 would hide the server's new address. A redirect is not followed: one to the new
+    /// address would hide it the same way.
     private func answers(_ origin: URL) async -> Bool {
         guard let url = URL(string: "api/health?scope=bridge", relativeTo: origin)?.absoluteURL else { return false }
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 2)
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await URLSession.shared.data(for: request, delegate: NoRedirects()),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
         return body["ok"] as? Bool == true && body["bridge_protocol"] is Int

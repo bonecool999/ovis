@@ -21,11 +21,13 @@ cookies and drafts stay in the app's own WebKit store, apart from any browser's.
 - The server's own pages stay in the app: a link that opens a new tab of it (a file) opens another
   Ovis window. A link to any other address goes to the default browser, and a file dropped where the
   page takes none is not opened in its place.
-- Downloads go to Downloads, and a file field opens the file panel. The microphone (dictation) is
-  the app's: macOS asks once, with the text in `Info.plist`, and a signed build carries the
-  hardened runtime's `com.apple.security.device.audio-input` entitlement (`Ovis.entitlements`).
+- Ovis's own downloads go to Downloads; a download from a site in a web panel opens in the default
+  browser, which asks as it does for any site. A file field opens the file panel. The microphone
+  (dictation) is the app's: macOS asks once, with the text in `Info.plist`, and a signed build
+  carries the hardened runtime's `com.apple.security.device.audio-input` entitlement
+  (`Ovis.entitlements`).
 - The app checks the server every 3 seconds (`/api/health?scope=bridge`, which leaves herdr alone,
-  and only Ovis's own answer counts). A running page reconnects by itself when the server is back
+  and only Ovis's own answer counts, never through a redirect). A running page reconnects by itself when the server is back
   within about 15 seconds, keeping what was open in it, and says itself when the server it meets was
   updated; a page that did not load, or whose code never started, loads again once the server
   answers. When the server is still gone after about 15 seconds, the window shows the setup's Start
