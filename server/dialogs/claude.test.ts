@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { answerKeys, claudeRewindOpen, parseInteractivePrompt } from "../prompt.ts";
 
 const fixture = (state: string, width: number): string =>
@@ -83,5 +84,61 @@ describe("Claude Code's bare /goal", () => {
     expect(parseInteractivePrompt("claude", shown.replace("Esc to dismiss", "Esc to dismiss\n\n   Clear goal"))).toBeNull();
     expect(parseInteractivePrompt("claude", `${shown}\n❯ hello`)).toBeNull();
     expect(parseInteractivePrompt("claude", fixture("none", 120).replace("No goal set", "Goal paused"))).toBeNull();
+  });
+});
+
+describe("Claude's question beside its fullscreen diff panel", () => {
+  // live-captured from Claude Code 2.1.303 (`"tui": "fullscreen"`, /diff shown) in a 180x52 pane, the
+  // session's text reworded: every row carries the panel's left edge in column 99 and the panel's own text after it
+  const panel = (state: string) => readFileSync(new URL(`../fixtures/claude-diff-panel-2.1.303-${state}-180.txt`, import.meta.url), "utf8");
+  const labels = (prompt: InteractivePrompt | null) => prompt?.options.map((option) => option.label);
+
+  test("reads one question with long Korean descriptions, the panel's text left out", () => {
+    const prompt = parseInteractivePrompt("claude", panel("one-korean"));
+    expect(prompt).toMatchObject({
+      kind: "question", title: "메뉴", question: "사이드바 메뉴를 어떻게 처리할까요?", custom_option_index: 3,
+      options: [
+        { label: "항상 펼쳐 두기", description: "사이드바를 화면 왼쪽에 고정해서 늘 펼쳐 둡니다. 메뉴 항목을 한눈에 볼 수 있어 찾기 쉽지만, 본문 영역이 그만큼 좁아집니다." },
+        { label: "접이식으로 만들기" },
+        { label: "상단 메뉴로 옮기기" },
+      ],
+    });
+    expect(answerKeys(prompt!, { option_index: 2 })).toEqual([{ keys: ["down"] }, { keys: ["down"] }, { keys: ["enter"] }]);
+    expect(answerKeys(prompt!, { custom_text: "직접 입력" })).toEqual([
+      { keys: ["down"] }, { keys: ["down"] }, { keys: ["down"] }, { text: "직접 입력" }, { keys: ["enter"] },
+    ]);
+  });
+
+  test("reads each of two questions and the review, with the panel's changes on screen", () => {
+    const first = parseInteractivePrompt("claude", panel("two-first"));
+    expect(first).toMatchObject({ kind: "question", title: "Scope · 1 of 2", question: "How far should the change go?", custom_option_index: 3 });
+    expect(labels(first)).toEqual(["Only a.txt", "All modified files", "Whole repository"]);
+    expect(answerKeys(first!, { option_index: 0 })).toEqual([{ keys: ["enter"] }]);
+    const second = parseInteractivePrompt("claude", panel("two-second"));
+    expect(second).toMatchObject({ kind: "question", title: "Tests · 2 of 2", question: "Add a regression test?", custom_option_index: 2 });
+    expect(labels(second)).toEqual(["Add", "Skip"]);
+    expect(answerKeys(second!, { option_index: 1 })).toEqual([{ keys: ["down"] }, { keys: ["enter"] }]);
+    const review = parseInteractivePrompt("claude", panel("two-review"));
+    expect(review).toMatchObject({
+      kind: "menu", title: "Review your answers", question: "Ready to submit your answers?",
+      answers: [{ question: "How far should the change go?", answer: "Only a.txt" }, { question: "Add a regression test?", answer: "Skip" }],
+    });
+    expect(labels(review)).toEqual(["Submit answers", "Cancel"]);
+  });
+
+  test("reads short English options", () => {
+    const prompt = parseInteractivePrompt("claude", panel("english"));
+    expect(prompt).toMatchObject({ kind: "question", title: "Color", question: "Which color?", custom_option_index: 3 });
+    expect(prompt?.options).toEqual([
+      { label: "Red", description: "A warm, bold color." },
+      { label: "Green", description: "A calm, natural color." },
+      { label: "Blue", description: "A cool, steady color." },
+    ]);
+  });
+
+  test("an answered question beside the panel is not read as open", () => {
+    // later output in the hint's place, the panel's edge still beside it
+    const hint = "Enter to select · ↑/↓ to navigate · Esc to cancel";
+    expect(parseInteractivePrompt("claude", panel("english").replace(hint, "● Done.".padEnd(hint.length)))).toBeNull();
   });
 });
