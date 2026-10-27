@@ -97,12 +97,12 @@ export function withoutClaudeSidePanel(screen: string): string {
     while (rows < lines.length && edges(lines[rows]!).includes(column)) rows += 1;
     return rows;
   };
+  // the panel's edge runs through the footer; a table's column divider stops where the table ends
+  const throughFooter = (rows: number): boolean => rows >= CLAUDE_SIDE_PANEL_MIN_ROWS && lines.slice(rows).every((line) => line.trim() === "");
   const column = edges(lines[0] ?? "").filter((at) => at >= CLAUDE_SIDE_PANEL_MIN_COLUMN)
-    .find((at) => rowsAt(at) >= CLAUDE_SIDE_PANEL_MIN_ROWS);
+    .find((at) => throughFooter(rowsAt(at)));
   if (column === undefined) return screen;
   const rows = rowsAt(column);
-  // the panel's edge runs through the footer; a table's column divider stops where the table ends
-  if (lines.slice(rows).some((line) => line.trim() !== "")) return screen;
   return lines.map((line, index) => index < rows ? line.slice(0, indexAtColumn(line, column)).trimEnd() : line).join("\n");
 }
 

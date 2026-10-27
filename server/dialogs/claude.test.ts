@@ -160,6 +160,15 @@ describe("Claude's question beside its fullscreen diff panel", () => {
     for (let row = 0; row < 8; row += 1) expect(JSON.stringify(prompt), `row ${row}`).toContain(`preserve requirement ${row}`);
   });
 
+  test("finds the panel's edge past a table divider that stops above the question", () => {
+    // a table scrolled to the top of the session, its divider left of the panel's edge in column 99
+    const lines = panel("english").split("\n");
+    for (let row = 0; row < 8; row += 1) lines[row] = `${`Task ${row}`.padEnd(40)}${"\u2502 preserve requirement".padEnd(59)}\u2502`;
+    const prompt = parseInteractivePrompt("claude", lines.join("\n"));
+    expect(prompt).toMatchObject({ kind: "question", title: "Color", question: "Which color?" });
+    expect(labels(prompt)).toEqual(["Red", "Green", "Blue"]);
+  });
+
   test("an answered question beside the panel is not read as open", () => {
     // later output in the hint's place, the panel's edge still beside it
     const hint = "Enter to select · ↑/↓ to navigate · Esc to cancel";
