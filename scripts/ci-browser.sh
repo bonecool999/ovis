@@ -61,6 +61,7 @@ run_script scripts/lan-exposure-notice-regression.ts
 run_script scripts/terminal-dispose-browser-qa.ts
 run_script scripts/herdr-restart-regression.ts
 run_script scripts/sticky-modifiers-regression.ts
+run_script scripts/pane-lifetime-regression.ts
 run_script scripts/terminal-arrows-clicks-regression.ts
 run_script scripts/terminal-viewport-regression.ts
 run_script scripts/terminal-touch-burst-regression.ts
@@ -76,8 +77,12 @@ run_script scripts/key-bar-hold-repeat-regression.ts
 run_script scripts/settings-pages-demo-regression.ts
 run_script scripts/interface-font-demo-regression.ts
 run_script scripts/theme-first-paint-demo-regression.ts
+run_script scripts/security-summary-demo-regression.ts
+run_script scripts/push-health-demo-regression.ts
+run_script scripts/device-security-demo-regression.ts
 run_script scripts/cliproxy-settings-regression.ts
 run_script scripts/pane-input-focus-demo-regression.ts
+run_script scripts/terminal-keyboard-demo-regression.ts
 run_script scripts/shortcut-exact-modifiers-demo-regression.ts
 run_script scripts/portal-regression.ts
 run_script scripts/deep-link-demo-regression.ts
@@ -101,6 +106,7 @@ run_script scripts/gjc-status-browser-regression.ts
 run_script scripts/math-browser-qa.ts
 run_script scripts/claude-image-browser-qa.ts
 run_script scripts/pi-image-browser-qa.ts
+run_script scripts/omp-codex-image-browser-qa.ts
 run_script scripts/file-viewer-regression.ts
 run_script scripts/pwa-update-browser-qa.ts
 run_script scripts/install-state-demo-regression.ts
@@ -136,6 +142,7 @@ run_script scripts/pane-mute-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts
 run_script scripts/prompt-dock-demo-regression.ts
 run_script scripts/opencode-prompt-regression.ts
+run_script scripts/pi-questionnaire-browser-regression.ts
 run_script scripts/files-prompt-regression.ts
 run_script scripts/plugin-actions-demo-regression.ts
 run_script scripts/background-agent-detail-demo-regression.ts

@@ -10,6 +10,7 @@ import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, paneCon
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 import * as herdr from "./herdr/client.ts";
 import * as omo from "./omo.ts";
+import * as processStart from "./process-start.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 
 const session = "12aa83d8-48bc-41f2-a498-7055c5c44a01";
@@ -67,6 +68,22 @@ async function logFixture(held: readonly string[]) {
   };
 }
 
+it.skipIf(process.platform !== "linux")("never reuses cached handoff unregister evidence when the process identity lookup fails", async () => {
+  const fixture = await logFixture([session]);
+  const { environment, log, pid } = fixture;
+  const read = () => copilotProcessSession(environment, ["copilot"], pid, "unregistered");
+  const realStarted = processStart.processStartedAt;
+  try {
+    appendFileSync(log, register(session) + register(session, "Unregistering"));
+    expect(read()?.sessionId).toBe(session);
+    writeFileSync(log, register(other));
+    const missing = spyOn(processStart, "processStartedAt").mockImplementation((current) => current === pid ? null : realStarted(current));
+    try { expect(read()).toBeNull(); } finally { missing.mockRestore(); }
+    expect(read()).toBeNull();
+    expect(copilotProcessSession(environment, ["copilot"], pid)?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
 it("parses persisted Copilot messages and tool rounds once, with failures and recorded metadata", () => {
   const text = start + prompt("Visible prompt")
     + line("assistant.message", { content: "Checking.", phase: "commentary", toolRequests: [{ toolCallId: "call-1", name: "shell", arguments: { command: "pwd" }, toolTitle: "Check directory" }], model: "fixture-model" })
@@ -98,6 +115,32 @@ it("reads a redacted recorded CLI session with root task ancestry and a tool-onl
     { kind: "text", text: "Recorded fixture text.", phase: "commentary" },
   ]);
   expect(parseConversationMetadata(recorded, "copilot-transcript").model).toBe("fixture-model");
+});
+
+it.each(["assistant.message", "tool.execution_start"])("preserves string arguments from %s with bounded display and verified tool output", (type) => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-string-arguments-"));
+  const path = join(dir, "events.jsonl");
+  const inputs = ['{ "command": "pwd" }', "{not valid JSON", '"freeform"', "x".repeat(16_001)];
+  try {
+    writeFileSync(path, start + prompt("Check") + inputs.map((input, index) => {
+      const request = { toolCallId: `string-${index}`, arguments: input };
+      return line(type, type === "assistant.message"
+        ? { toolRequests: [{ ...request, name: "shell" }] }
+        : { ...request, toolName: "shell" })
+        + line("tool.execution_complete", { toolCallId: request.toolCallId, success: false, result: { content: `output ${index} `.repeat(1000) } });
+    }).join("") + answer("Finished."));
+    const page = transcriptPage("copilot-transcript", path);
+    const tools = page.turns.flatMap((turn) => turn.parts).filter((part) => part.kind === "tool");
+    expect(tools).toHaveLength(inputs.length);
+    for (const [index, tool] of tools.entries()) {
+      expect(tool.input).toBe(inputs[index]!.slice(0, 16_000));
+      expect(tool.error).toBe(true);
+      expect(tool.output_ref).toMatch(/^string-\d+@/);
+      expect(transcriptToolOutput("copilot-transcript", path, tool.output_ref!)).toBe(`output ${index} `.repeat(1000));
+    }
+    expect(tools[0]?.summary).toBe("pwd");
+    expect(page.turns.at(-1)?.parts.at(-1)).toEqual({ kind: "text", text: "Finished.", phase: "final_answer" });
+  } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 it("keeps root prompts carrying parentAgentTaskId and pages at those prompts", () => {

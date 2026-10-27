@@ -36,8 +36,8 @@ pane, so a session Muse opens after a failed scan can take that long to show. On
 4096 entries, is not read, and Chat uses Terminal.
 
 The data directory comes from the server's `XDG_DATA_HOME`; a Muse started with another one
-uses Terminal. A process's start time comes from `ps` on macOS (whole seconds, so a three-second
-margin) and `/proc` on Linux (to 10 ms, so a 20 ms margin). Windows uses Terminal.
+uses Terminal. A process's start time comes from the kernel's process record on macOS (with a
+three-second margin) and `/proc` on Linux (to 10 ms, so a 20 ms margin). Windows uses Terminal.
 
 ## What is read
 
@@ -74,7 +74,11 @@ session logs all read without a refusal.
 
 A log rewritten in place, rather than appended to, starts a new history, so that its cursors and
 the turns kept from earlier reads no longer count: when it gets smaller, when it keeps its size
-with a new time, or when it grows while the last 16 MiB it held before changed.
+with a new time, or when it grows while the last 16 MiB it held before changed. The check starts
+at the 64 KiB boundary at or before those 16 MiB, so it covers the whole newest page. One read
+checks the old window and digests the new one, a 64 KiB chunk at a time with xxHash3. A log that
+grows past the whole window between two reads also starts a new history, because the two windows
+share no bytes.
 
 ## Limits
 

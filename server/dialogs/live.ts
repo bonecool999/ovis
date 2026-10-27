@@ -8,6 +8,7 @@ import { OMP_CLIPPED_SINGLE_HINT_RE, OMP_MULTI_CLIPPED_HINT_RE, OMP_MULTI_HINT_R
 import { HERMES_HINT_RE } from "./hermes.ts";
 import { PI_INPUT_HINT_RE, PI_MENU_HINT_RE, PI_THINKING_HINT_LINES } from "./pi.ts";
 import { openCodeV1QuestionActive } from "./opencode.ts";
+import { isPiQuestionnaireScreen } from "./pi-questionnaire.ts";
 import { cmdFooterStart } from "./cmd.ts";
 
 /**
@@ -94,7 +95,8 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
   // the last one, never for a hint that ended above later output (an answered, stale menu).
   const ends = (re: RegExp): boolean => [1, 2, 3].some((span) =>
     re.test(shown.slice(-span).join(" ")) && (span === 1 || !re.test(shown.slice(-span, -1).join(" "))));
-  // The rpiv reader validates its complete frame and Pi footer itself, including clipped hints.
+  // Pi custom readers validate their complete frame and Pi footer themselves.
+  if (prompt.responder.startsWith("pi-questionnaire-")) return true;
   if (prompt.responder === "pi-ask-question" || prompt.responder === "pi-ask-submit") return true;
   if (prompt.responder === "omp-question") return ends(OMP_SINGLE_HINT_RE) || ends(OMP_CLIPPED_SINGLE_HINT_RE) || ends(OMP_SINGLE_CLIPPED_HINT_RE) || ends(OMP_MULTI_HINT_RE)
     || ends(OMP_MULTI_CLIPPED_HINT_RE);
@@ -204,6 +206,7 @@ function hintAtEnd(shown: string[], atEnd: RegExp, footerLines: number, span = 3
 export function parsePrompt(agent: string, fullScreen: string, omoAsk: OmoAsk | null = null, omoTrusted = true, omoOpen: OmoAsk[] = [], sent: string | null = null, working = false): ParsedPrompt | null {
   // Claude's menus are read, and their tail checked, on the session's side of a fullscreen side panel
   const screen = agent === "claude" ? withoutClaudeSidePanel(fullScreen) : fullScreen;
+  if (agent === "pi" && isPiQuestionnaireScreen(screen)) return null; // requires native call binding
   const ctx = { agent, omoAsk, omoTrusted, omoOpen, sent, working };
   for (const reader of registry.readersFor(agent)) {
     // a result reader reads only below a send's own echo (outcome.ts), never a card on the whole screen

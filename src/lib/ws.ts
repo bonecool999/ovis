@@ -910,7 +910,7 @@ export class HerdrSocket {
       if (this.mode === "observe") return { ok: false, code: "read_only", message: "Observe connections cannot change pending messages." };
       if (!this.canQueueMessages()) return { ok: false, code: "pending_input_unsupported", message: "Update this PC to manage pending messages." };
       return this.submitRequest({ type: "pending-action", id: this.nextSubmit++, pane_id: paneId, pending_id: pendingId, action,
-        ...(generation !== undefined ? { resend_generation: generation } : {}) });
+        ...(generation !== undefined ? { resend_generation: generation } : {}), launch_ended: true });
     })();
   }
 
