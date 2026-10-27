@@ -144,6 +144,22 @@ describe("Claude's question beside its fullscreen diff panel", () => {
     ]);
   });
 
+  test("keeps a plan's table whole when no panel is beside it", () => {
+    // a markdown table scrolled above the plan's top border: a `│` in one column on the first rows only
+    const table = Array.from({ length: 8 }, (_, row) => `${`Task ${row}`.padEnd(40)}│ preserve requirement ${row}`);
+    const screen = [
+      ...table,
+      "Claude has written up a plan and is ready to execute. Would you like to proceed?",
+      "❯ 1. Yes",
+      "  2. No",
+      "  3. Tell Claude what to change",
+      "ctrl+g to edit",
+    ].join("\n");
+    const prompt = parseInteractivePrompt("claude", screen);
+    expect(prompt).not.toBeNull();
+    for (let row = 0; row < 8; row += 1) expect(JSON.stringify(prompt), `row ${row}`).toContain(`preserve requirement ${row}`);
+  });
+
   test("an answered question beside the panel is not read as open", () => {
     // later output in the hint's place, the panel's edge still beside it
     const hint = "Enter to select · ↑/↓ to navigate · Esc to cancel";

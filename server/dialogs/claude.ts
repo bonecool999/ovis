@@ -75,8 +75,9 @@ function indexAtColumn(line: string, column: number): number {
  * Claude Code's fullscreen layout (`"tui": "fullscreen"`) can draw a side panel to the right of the
  * session, its diff panel (`/diff`, `1 file changed +2 … source: Current ▾`) on a pane of 110 columns
  * or more: every row from the screen's top carries the panel's left edge `│` in one column, the
- * panel's own text after it. Those rows are cut at that edge so the session's menus read as without
- * the panel (measured on 2.1.303). A screen with no such edge from its first row is left as it is.
+ * panel's own text after it, down through the prompt and its footer. Those rows are cut at that edge
+ * so the session's menus read as without the panel (measured on 2.1.303). A screen whose edge stops
+ * before its last non-blank row (a markdown table scrolled above a plan, say) is left as it is.
  */
 const CLAUDE_SIDE_PANEL_MIN_COLUMN = 40;
 const CLAUDE_SIDE_PANEL_MIN_ROWS = 8;
@@ -100,6 +101,8 @@ export function withoutClaudeSidePanel(screen: string): string {
     .find((at) => rowsAt(at) >= CLAUDE_SIDE_PANEL_MIN_ROWS);
   if (column === undefined) return screen;
   const rows = rowsAt(column);
+  // the panel's edge runs through the footer; a table's column divider stops where the table ends
+  if (lines.slice(rows).some((line) => line.trim() !== "")) return screen;
   return lines.map((line, index) => index < rows ? line.slice(0, indexAtColumn(line, column)).trimEnd() : line).join("\n");
 }
 
