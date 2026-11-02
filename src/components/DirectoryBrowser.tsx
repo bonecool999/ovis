@@ -135,15 +135,16 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
   const directories = listing === null || onPick === undefined || normalizedQuery === ""
     ? listing?.directories
     : listing.directories.filter((name) => name.toLowerCase().includes(normalizedQuery));
-  // The picker's search and confirm share one row; Show hidden sits in its path bar. The file browser keeps its footer.
+  // A listing in flight owns the next answer: a toggle that opened the old path would discard it.
   const toggleHidden = (): void => {
+    if (loading || listing === null) return;
     const next = !hidden;
     setHidden(next);
-    if (listing) void open(listing.path, next, false);
+    void open(listing.path, next, false);
   };
   const footer = <div className="dir-browser-footer">
     <label className="dir-browser-hidden">
-      <input type="checkbox" checked={hidden} disabled={loading && listing === null} onChange={toggleHidden} />
+      <input type="checkbox" checked={hidden} disabled={loading || listing === null} onChange={toggleHidden} />
       {t("Show hidden")}
     </label>
   </div>;
@@ -159,7 +160,7 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
         </button>
         <span className="dir-browser-path" title={path}><span dir="ltr">{shown}</span></span>
         {onPick !== undefined && (
-          <button type="button" className="icon-button" aria-label={t("Show hidden")} title={t("Show hidden")} aria-pressed={hidden} disabled={loading && listing === null} onClick={toggleHidden}>
+          <button type="button" className="icon-button" aria-label={t("Show hidden")} title={t("Show hidden")} aria-pressed={hidden} disabled={loading || listing === null} onClick={toggleHidden}>
             {hidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
           </button>
         )}
