@@ -1738,8 +1738,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         if (olderGeneration.current === generation) loadingOlder.current = false;
       }
     }).catch((cause: unknown) => {
-      // A page still queued when its screen closes is cancelled before its callback runs.
+      // A page still queued when its screen closes is cancelled before its callback runs, so its
+      // finally never clears the loading flags: clear them here, or Load older stays disabled
       if (!(cause instanceof DOMException && cause.name === "AbortError")) throw cause;
+      if (olderGeneration.current === generation) { loadingOlder.current = false; setOlderState("idle"); }
     });
   }, [fetchPaneConversation, olderCursor, paneId, pagePrompts, conversationRefresh]);
 
