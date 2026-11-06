@@ -35,7 +35,7 @@
  */
 
 import { createHash, randomUUID, type Hash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
 import { readStatuslineContext } from "./statusline.ts";
 import { transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
@@ -218,7 +218,9 @@ interface TranscriptStream {
 // invalidating settled turns and incremental parsers as well as the response cache.
 // `hash` digests the bytes read so far, fed only what each growth appends.
 const transcriptRevisions = new Map<string, { identity: string; size: number; changed: string; generation: string; hash?: Hash; window?: { start: number; end: number; digests: BigUint64Array } }>();
-function transcriptGeneration(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, checkWindow = false): string {
+// `read` false (a leased image read, whose bytes come asynchronously) never reads the file here: a
+// digest it would have to extend is dropped, and a touch it sees counts as a rewrite.
+function transcriptGeneration(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, checkWindow = false, read = true): string {
   const identity = `${stat.dev}:${stat.ino}`;
   const changed = `${stat.mtimeMs}:${stat.ctimeMs}`;
   const previous = transcriptRevisions.get(path);
@@ -229,7 +231,7 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
   // times about hourly, bytes untouched). The whole file's digest tells them apart; bytes that
   // cannot be read count as a rewrite.
   if (same && stat.size === previous.size && changed !== previous.changed) {
-    const now = hash && hashRange(path, createHash("sha256"), 0, stat.size);
+    const now = read && hash ? hashRange(path, stat, createHash("sha256"), 0, stat.size) : undefined;
     if (!now || now.digest("base64") !== hash!.copy().digest("base64")) rewritten = true;
   }
   // Muse: a rewrite that also grew keeps the inode and passes the checks above, so the window last
@@ -255,17 +257,23 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
   // Only a log within one window keeps a digest, so no read goes past the transcript budget; a
   // larger log's touch counts as a rewrite, as before.
   if (rewritten || stat.size > TRANSCRIPT_WINDOW_BYTES) hash = undefined;
-  if (stat.size <= TRANSCRIPT_WINDOW_BYTES && (hash === undefined || previous!.size < stat.size)) hash = hashRange(path, hash?.copy() ?? createHash("sha256"), hash === undefined ? 0 : previous!.size, stat.size);
+  if (stat.size <= TRANSCRIPT_WINDOW_BYTES && (hash === undefined || previous!.size < stat.size)) hash = read ? hashRange(path, stat, hash?.copy() ?? createHash("sha256"), hash === undefined ? 0 : previous!.size, stat.size) : undefined;
   const generation = rewritten ? randomUUID() : previous?.identity === identity ? previous.generation : "";
   remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation, hash, window }, 64);
   return generation ? `-${generation}` : "";
 }
 
-/** `hash` fed bytes `from` to `to` of a file a chunk at a time, or undefined when they cannot all be read. */
-function hashRange(path: string, hash: Hash, from: number, to: number): Hash | undefined {
+/**
+ * `hash` fed bytes `from` to `to` of a file a chunk at a time, or undefined when they cannot all be read
+ * or the path no longer names the regular file `stat` saw, unchanged, before and after the read.
+ * O_NONBLOCK, so a FIFO put where the file was is not waited on.
+ */
+function hashRange(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, hash: Hash, from: number, to: number): Hash | undefined {
+  const unchanged = (now: Stats): boolean => now.isFile() && now.dev === stat.dev && now.ino === stat.ino && now.size === stat.size && now.mtimeMs === stat.mtimeMs && now.ctimeMs === stat.ctimeMs;
   try {
-    const fd = openSync(path, "r");
+    const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
     try {
+      if (!unchanged(fstatSync(fd))) return undefined;
       const chunk = Buffer.allocUnsafe(Math.min(Math.max(to - from, 0), 1024 * 1024));
       for (let at = from; at < to;) {
         const read = readSync(fd, chunk, 0, Math.min(chunk.length, to - at), at);
@@ -273,7 +281,7 @@ function hashRange(path: string, hash: Hash, from: number, to: number): Hash | u
         hash.update(chunk.subarray(0, read));
         at += read;
       }
-      return hash;
+      return unchanged(fstatSync(fd)) ? hash : undefined;
     } finally { closeSync(fd); }
   } catch { return undefined; }
 }
@@ -289,7 +297,7 @@ function windowBytes(path: string, from: number, to: number): Buffer | null {
   } catch { return null; }
 }
 
-function transcriptStream(source: StreamSource, path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, codexHome: string, agy?: AgyProjection, fd?: number): TranscriptStream {
+function transcriptStream(source: StreamSource, path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, codexHome: string, agy?: AgyProjection, fd?: number, leased = false): TranscriptStream {
   // (a chain whose parent was archived since comes back shorter: codexHistorySegments;
   // a pi branch skips the side paths a /tree left behind: piBranchSegments)
   const grok = source === "grok-transcript" ? grokProjection(path, stat) : null;
@@ -337,7 +345,7 @@ function transcriptStream(source: StreamSource, path: string, stat: { dev: numbe
   }
   const version = source === "claude-transcript"
     ? { key: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, began: performance.now(), wall: Date.now() } : undefined;
-  return { id: `${stat.dev.toString(36)}-${stat.ino.toString(36)}${chain}${transcriptGeneration(path, stat, source === "muse-transcript")}`, files, length: stream, floor: 0, promptStarts: grok?.promptStarts ?? agy?.promptStarts, fd, version };
+  return { id: `${stat.dev.toString(36)}-${stat.ino.toString(36)}${chain}${transcriptGeneration(path, stat, source === "muse-transcript", !leased)}`, files, length: stream, floor: 0, promptStarts: grok?.promptStarts ?? agy?.promptStarts, fd, version };
 }
 
 /** readStream's bytes in `into`, which holds them until the caller reads into it again: no buffer is allocated. */
@@ -3033,7 +3041,7 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean, file?:
     // a lease is let in only while the path names the file it pinned (TranscriptReader.read); a change
     // since is judged once the read ends, as one during it is
     if (file === undefined && !(yield* current(stat))) return null;
-    const stream = transcriptStream("claude-transcript", path, stat, defaultCodexHome(), undefined, fd);
+    const stream = transcriptStream("claude-transcript", path, stat, defaultCodexHome(), undefined, fd, file !== undefined);
     stream.file = file;
     // a lookup asked for before its turn began then (transcriptImageAsync)
     if (began !== undefined && stream.version !== undefined) stream.version = { ...stream.version, ...began };
@@ -3063,7 +3071,7 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean, file?:
       yield;
     }
     if (digest !== seen.digest) return unpublish(stream);
-    const active = transcriptStream("claude-transcript", path, now, defaultCodexHome(), undefined, fd);
+    const active = transcriptStream("claude-transcript", path, now, defaultCodexHome(), undefined, fd, file !== undefined);
     active.file = file;
     scans.push(active);
     active.current = () => current(now);
