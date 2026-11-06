@@ -216,10 +216,10 @@ interface TranscriptStream {
 
 // In-place rewrites keep the inode. Change the cursor generation when observed,
 // invalidating settled turns and incremental parsers as well as the response cache.
-// `hash` digests the bytes read so far, fed only what each growth appends.
-const transcriptRevisions = new Map<string, { identity: string; size: number; changed: string; generation: string; hash?: Hash; window?: { start: number; end: number; digests: BigUint64Array } }>();
-// `read` false (a leased image read, whose bytes come asynchronously) never reads the file here: a
-// digest it would have to extend is dropped, and a touch it sees counts as a rewrite.
+// `hash` digests the first `hashed` bytes, fed only what each growth appends.
+const transcriptRevisions = new Map<string, { identity: string; size: number; changed: string; generation: string; hash?: Hash; hashed: number; window?: { start: number; end: number; digests: BigUint64Array } }>();
+// `read` false (a leased image read, whose bytes come asynchronously) never reads the file here: the
+// digest stays as it was, for the next read to extend, and a touch it sees counts as a rewrite.
 function transcriptGeneration(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, checkWindow = false, read = true): string {
   const identity = `${stat.dev}:${stat.ino}`;
   const changed = `${stat.mtimeMs}:${stat.ctimeMs}`;
@@ -227,12 +227,13 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
   const same = previous !== undefined && previous.identity === identity;
   let rewritten = same && stat.size < previous.size;
   let hash = same && !rewritten ? previous.hash : undefined;
+  let hashed = hash ? previous!.hashed : 0;
   // Same size, new timestamps: a rewrite, or only a touch (Claude Code sets its open session's
-  // times about hourly, bytes untouched). The whole file's digest tells them apart; bytes that
-  // cannot be read count as a rewrite.
+  // times about hourly, bytes untouched). The digest of the bytes digested before tells them apart;
+  // bytes that cannot be read count as a rewrite.
   if (same && stat.size === previous.size && changed !== previous.changed) {
-    const now = read && hash ? hashRange(path, stat, createHash("sha256"), 0, stat.size) : undefined;
-    if (!now || now.digest("base64") !== hash!.copy().digest("base64")) rewritten = true;
+    const now = read && hash ? hashRange(path, stat, createHash("sha256"), 0, hashed) : undefined;
+    if (!now || now.copy().digest("base64") !== hash!.copy().digest("base64")) rewritten = true;
   }
   // Muse: a rewrite that also grew keeps the inode and passes the checks above, so the window last
   // read must still hold the bytes it held. One read from its start checks it and digests the new
@@ -256,20 +257,23 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
   // A first read (or one after a rewrite) digests the whole file, a growth only what it appended.
   // Only a log within one window keeps a digest, so no read goes past the transcript budget; a
   // larger log's touch counts as a rewrite, as before.
-  if (rewritten || stat.size > TRANSCRIPT_WINDOW_BYTES) hash = undefined;
-  if (stat.size <= TRANSCRIPT_WINDOW_BYTES && (hash === undefined || previous!.size < stat.size)) hash = read ? hashRange(path, stat, hash?.copy() ?? createHash("sha256"), hash === undefined ? 0 : previous!.size, stat.size) : undefined;
+  if (rewritten || stat.size > TRANSCRIPT_WINDOW_BYTES) { hash = undefined; hashed = 0; }
+  if (read && stat.size <= TRANSCRIPT_WINDOW_BYTES && (hash === undefined || hashed < stat.size)) {
+    hash = hashRange(path, stat, hash?.copy() ?? createHash("sha256"), hash === undefined ? 0 : hashed, stat.size);
+    hashed = hash ? stat.size : 0;
+  }
   const generation = rewritten ? randomUUID() : previous?.identity === identity ? previous.generation : "";
-  remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation, hash, window }, 64);
+  remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation, hash, hashed, window }, 64);
   return generation ? `-${generation}` : "";
 }
 
 /**
  * `hash` fed bytes `from` to `to` of a file a chunk at a time, or undefined when they cannot all be read
- * or the path no longer names the regular file `stat` saw, unchanged, before and after the read.
- * O_NONBLOCK, so a FIFO put where the file was is not waited on.
+ * or the path no longer names the regular file `stat` saw, holding at least `to` bytes, before and after
+ * the read (an append meanwhile leaves them alone). O_NONBLOCK, so a FIFO put there is not waited on.
  */
-function hashRange(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, hash: Hash, from: number, to: number): Hash | undefined {
-  const unchanged = (now: Stats): boolean => now.isFile() && now.dev === stat.dev && now.ino === stat.ino && now.size === stat.size && now.mtimeMs === stat.mtimeMs && now.ctimeMs === stat.ctimeMs;
+function hashRange(path: string, stat: { dev: number; ino: number }, hash: Hash, from: number, to: number): Hash | undefined {
+  const unchanged = (now: Stats): boolean => now.isFile() && now.dev === stat.dev && now.ino === stat.ino && now.size >= to;
   try {
     const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
     try {

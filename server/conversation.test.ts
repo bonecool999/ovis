@@ -25,7 +25,7 @@ import * as gjcRuntime from "./gjc-runtime.ts";
 import * as runtime from "./herdr-core/runtime.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -2800,6 +2800,22 @@ it("keeps a transcript's history_id across a touch that leaves its bytes alone",
     forgetTranscriptState();
     expect(id()).toBe(base);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("keeps a transcript's history_id across a touch after an image lookup saw it grow", async () => {
+  // the image lookup reads asynchronously and leaves the digest for the next page read to extend
+  const root = mkdtempSync(join(tmpdir(), "herdr-claude-touch-image-"));
+  try {
+    const path = join(root, "session.jsonl");
+    const prompt = (n: number) => `${JSON.stringify({ type: "user", uuid: `u${n}`, parentUuid: n ? `u${n - 1}` : null, timestamp: "2026-11-06T00:00:00.000Z", message: { role: "user", content: `prompt ${n}` } })}\n`;
+    const id = () => transcriptPage("claude-transcript", path).history_id;
+    writeFileSync(path, prompt(0));
+    const base = id();
+    appendFileSync(path, prompt(1));
+    expect(await transcriptImageAsync(path, "00000000-0000-0000-0000-000000000000:0")).toBeNull();
+    utimesSync(path, new Date(), new Date(Date.now() + 1000));
+    expect(id()).toBe(base);
+  } finally { forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
 });
 
 it("expands inherited Codex tool output without exposing output discarded by a backtrack", () => {
