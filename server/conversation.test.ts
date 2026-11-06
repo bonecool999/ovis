@@ -2773,6 +2773,35 @@ it("incrementally reads one growing Codex task across split UTF-8, partial recor
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+it("keeps a transcript's history_id across a touch that leaves its bytes alone", () => {
+  // Claude Code sets its open session's times about hourly without writing a byte: not a rewrite.
+  const root = mkdtempSync(join(tmpdir(), "herdr-claude-touch-"));
+  try {
+    const path = join(root, "session.jsonl");
+    const prompt = (n: number, text: string) => `${JSON.stringify({ type: "user", uuid: `u${n}`, parentUuid: n ? `u${n - 1}` : null, timestamp: "2026-11-06T00:00:00.000Z", message: { role: "user", content: text } })}\n`;
+    const id = () => transcriptPage("claude-transcript", path).history_id;
+    const touch = (seconds: number) => utimesSync(path, new Date(), new Date(Date.now() + seconds * 1000));
+    writeFileSync(path, prompt(0, "alpha") + prompt(1, "bravo"));
+    const base = id();
+    touch(1);
+    expect(id()).toBe(base);
+    appendFileSync(path, prompt(2, "charlie"));
+    expect(id()).toBe(base);
+    touch(2);
+    expect(id()).toBe(base);
+    // the same size with one early byte changed is still a rewrite
+    writeFileSync(path, readFileSync(path, "utf8").replace("alpha", "alphA"));
+    touch(3);
+    const rewritten = id();
+    expect(rewritten).not.toBe(base);
+    touch(4);
+    expect(id()).toBe(rewritten);
+    // the generation lives in memory only: a cold read names the file by its identity alone
+    forgetTranscriptState();
+    expect(id()).toBe(base);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 it("expands inherited Codex tool output without exposing output discarded by a backtrack", () => {
   const home = mkdtempSync(join(tmpdir(), "herdr-tool-history-"));
   try {

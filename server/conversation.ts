@@ -34,7 +34,7 @@
  * integration and lives in paneTranscript.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, type Hash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
 import { readStatuslineContext } from "./statusline.ts";
 import { transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
@@ -216,12 +216,22 @@ interface TranscriptStream {
 
 // In-place rewrites keep the inode. Change the cursor generation when observed,
 // invalidating settled turns and incremental parsers as well as the response cache.
-const transcriptRevisions = new Map<string, { identity: string; size: number; changed: string; generation: string; window?: { start: number; end: number; digests: BigUint64Array } }>();
+// `hash` digests the bytes read so far, fed only what each growth appends.
+const transcriptRevisions = new Map<string, { identity: string; size: number; changed: string; generation: string; hash?: Hash; window?: { start: number; end: number; digests: BigUint64Array } }>();
 function transcriptGeneration(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, checkWindow = false): string {
   const identity = `${stat.dev}:${stat.ino}`;
   const changed = `${stat.mtimeMs}:${stat.ctimeMs}`;
   const previous = transcriptRevisions.get(path);
-  let rewritten = previous !== undefined && previous.identity === identity && (stat.size < previous.size || (stat.size === previous.size && changed !== previous.changed));
+  const same = previous !== undefined && previous.identity === identity;
+  let rewritten = same && stat.size < previous.size;
+  let hash = same && !rewritten ? previous.hash : undefined;
+  // Same size, new timestamps: a rewrite, or only a touch (Claude Code sets its open session's
+  // times about hourly, bytes untouched). The whole file's digest tells them apart; bytes that
+  // cannot be read count as a rewrite.
+  if (same && stat.size === previous.size && changed !== previous.changed) {
+    const now = hash && hashRange(path, createHash("sha256"), 0, stat.size);
+    if (!now || now.digest("base64") !== hash!.copy().digest("base64")) rewritten = true;
+  }
   // Muse: a rewrite that also grew keeps the inode and passes the checks above, so the window last
   // read must still hold the bytes it held. One read from its start checks it and digests the new
   // window, each chunk once. A growth past the whole window shares no bytes with it, so it counts as
@@ -241,9 +251,31 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
     const kept = digests?.slice((start - from) / WINDOW_CHUNK_BYTES);
     window = kept?.length ? { start, end: stat.size, digests: kept } : undefined;
   }
+  // A first read (or one after a rewrite) digests the whole file, a growth only what it appended.
+  // Only a log within one window keeps a digest, so no read goes past the transcript budget; a
+  // larger log's touch counts as a rewrite, as before.
+  if (rewritten || stat.size > TRANSCRIPT_WINDOW_BYTES) hash = undefined;
+  if (stat.size <= TRANSCRIPT_WINDOW_BYTES && (hash === undefined || previous!.size < stat.size)) hash = hashRange(path, hash?.copy() ?? createHash("sha256"), hash === undefined ? 0 : previous!.size, stat.size);
   const generation = rewritten ? randomUUID() : previous?.identity === identity ? previous.generation : "";
-  remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation, window }, 64);
+  remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation, hash, window }, 64);
   return generation ? `-${generation}` : "";
+}
+
+/** `hash` fed bytes `from` to `to` of a file a chunk at a time, or undefined when they cannot all be read. */
+function hashRange(path: string, hash: Hash, from: number, to: number): Hash | undefined {
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const chunk = Buffer.allocUnsafe(Math.min(Math.max(to - from, 0), 1024 * 1024));
+      for (let at = from; at < to;) {
+        const read = readSync(fd, chunk, 0, Math.min(chunk.length, to - at), at);
+        if (read <= 0) return undefined;
+        hash.update(chunk.subarray(0, read));
+        at += read;
+      }
+      return hash;
+    } finally { closeSync(fd); }
+  } catch { return undefined; }
 }
 
 /** Bytes `from` to `to` of a file, or null when they cannot all be read. */
