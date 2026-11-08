@@ -216,8 +216,10 @@ interface TranscriptStream {
 
 // In-place rewrites keep the inode. Change the cursor generation when observed,
 // invalidating settled turns and incremental parsers as well as the response cache.
-// `hash` digests the first `hashed` bytes, fed only what each growth appends.
-const transcriptRevisions = new Map<string, { identity: string; size: number; changed: string; generation: string; hash?: Hash; hashed: number; window?: { start: number; end: number; digests: BigUint64Array } }>();
+// `hash` digests the first `hashed` bytes, fed only what each growth appends. `prefix` is the digest of
+// the first PREFIX_BYTES (or all) of the `at` bytes the last reading call saw.
+const transcriptRevisions = new Map<string, { identity: string; size: number; changed: string; generation: string; hash?: Hash; hashed: number; prefix?: { digest: string; at: number }; window?: { start: number; end: number; digests: BigUint64Array } }>();
+const PREFIX_BYTES = 64 * 1024;
 // `read` false (a leased image read, whose bytes come asynchronously) never reads the file here: the
 // digest stays as it was, for the next read to extend, and a touch it sees counts as a rewrite.
 function transcriptGeneration(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, checkWindow = false, read = true): string {
@@ -234,6 +236,17 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
   if (same && stat.size === previous.size && changed !== previous.changed) {
     const now = read && hash ? hashRange(path, stat, createHash("sha256"), 0, hashed) : undefined;
     if (!now || now.copy().digest("base64") !== hash!.copy().digest("base64")) rewritten = true;
+  }
+  // A growth of the same inode is taken for an append, and `hash` is only extended by it. Its first
+  // bytes must still be the ones read before (an earlier rewrite while growing would otherwise keep
+  // the generation, and a same-size restore later match the extended digest). ponytail: only the first
+  // 64 KiB, a growing read stays about as cheap as before; a rewrite past them while growing still
+  // passes. A leased read leaves `prefix` at the size it checked, for the next read to check.
+  let prefix = same && !rewritten ? previous.prefix : undefined;
+  let head: Hash | undefined;
+  if (read && prefix && stat.size > prefix.at) {
+    head = hashRange(path, stat, createHash("sha256"), 0, Math.min(PREFIX_BYTES, prefix.at));
+    if (!head || head.copy().digest("base64") !== prefix.digest) { rewritten = true; head = undefined; }
   }
   // Muse: a rewrite that also grew keeps the inode and passes the checks above, so the window last
   // read must still hold the bytes it held. One read from its start checks it and digests the new
@@ -262,8 +275,15 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
     hash = hashRange(path, stat, hash?.copy() ?? createHash("sha256"), hash === undefined ? 0 : hashed, stat.size);
     hashed = hash ? stat.size : 0;
   }
+  if (rewritten) { prefix = undefined; head = undefined; }
+  if (read && prefix?.at !== stat.size) {
+    const checked = head ? Math.min(PREFIX_BYTES, prefix!.at) : 0;
+    const to = Math.min(PREFIX_BYTES, stat.size);
+    head = checked === to ? head : hashRange(path, stat, head ?? createHash("sha256"), checked, to);
+    prefix = head ? { digest: head.digest("base64"), at: stat.size } : undefined;
+  }
   const generation = rewritten ? randomUUID() : previous?.identity === identity ? previous.generation : "";
-  remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation, hash, hashed, window }, 64);
+  remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation, hash, hashed, prefix, window }, 64);
   return generation ? `-${generation}` : "";
 }
 
