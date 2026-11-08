@@ -298,7 +298,8 @@ function hashRange(path: string, stat: { dev: number; ino: number }, hash: Hash,
     const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
     try {
       if (!unchanged(fstatSync(fd))) return undefined;
-      const chunk = Buffer.allocUnsafe(Math.min(Math.max(to - from, 0), 1024 * 1024));
+      // 64 KiB at a time: a check, not a page read, so a page read's failure is its own
+      const chunk = Buffer.allocUnsafe(Math.min(Math.max(to - from, 0), 64 * 1024));
       for (let at = from; at < to;) {
         const read = readSync(fd, chunk, 0, Math.min(chunk.length, to - at), at);
         if (read <= 0) return undefined;
