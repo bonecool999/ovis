@@ -105,6 +105,17 @@ const ONLINE_MS = 30_000;
 async function relayOnline(options: LinkOptions, api: Api): Promise<void> {
   const now = options.now ?? Date.now;
   const wait = options.wait ?? waitFor;
+  let status = await relayOn(options, api);
+  const deadline = now() + ONLINE_MS;
+  while (status.phase !== "online") {
+    if (now() >= deadline) throw new LocalError("The Ovis relay did not come online in 30 seconds. Check this PC's internet connection and try again.");
+    await wait(500, options.signal);
+    status = await api<{ phase: string; blocked: string | null }>("GET", "/api/relay");
+  }
+}
+
+/** The relay turned on (not yet online): an Ovis relay that asks for a pass comes online only once this PC names its account. */
+async function relayOn(options: LinkOptions, api: Api): Promise<{ phase: string; blocked: string | null }> {
   let status = await api<{ phase: string; blocked: string | null }>("GET", "/api/relay");
   if (status.blocked) throw new LocalError(`The Ovis relay cannot run here (${status.blocked}).`);
   if (status.phase === "off") {
@@ -112,12 +123,7 @@ async function relayOnline(options: LinkOptions, api: Api): Promise<void> {
     status = await api<{ phase: string; blocked: string | null }>("POST", "/api/relay/start");
     if (status.blocked) throw new LocalError(`The Ovis relay cannot run here (${status.blocked}).`);
   }
-  const deadline = now() + ONLINE_MS;
-  while (status.phase !== "online") {
-    if (now() >= deadline) throw new LocalError("The Ovis relay did not come online in 30 seconds. Check this PC's internet connection and try again.");
-    await wait(500, options.signal);
-    status = await api<{ phase: string; blocked: string | null }>("GET", "/api/relay");
-  }
+  return status;
 }
 
 /**
@@ -232,12 +238,23 @@ async function listThisPc(api: Api, service: AccountService, now: () => number, 
   if (listed === undefined || now() - Date.parse(listed.added_at) < NEW_PC_MS - RELIST_MS) {
     await service.putPc(listing.serverId, listing.entry);
     unlisted.listing = null;
+    await nameRelayAccount(api, service);
     return listing;
   }
   unlisted.listing = listing;
   await service.deletePc(offer.server_id);
   if (await putListing(service, listing)) unlisted.listing = null;
+  await nameRelayAccount(api, service);
   return listing;
+}
+
+/**
+ * Tells this PC the account it is listed under, which its relay pass is asked under (docs/relay.md,
+ * "Relay pass"). An Ovis from before relay passes has no such route; this runs again with every relist.
+ */
+async function nameRelayAccount(api: Api, service: AccountService): Promise<void> {
+  const session = await service.session();
+  if (session) await api("POST", "/api/account/relay-account", { body: { account: session.account } }).catch(() => undefined);
 }
 
 /** Puts the entry back; false when the service did not take it (it stays pending). */
@@ -265,7 +282,8 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     out("The account service is off on this PC (OVIS_ACCOUNT_SERVICE_URL=off). Link it with a code instead: run this again with --code.\n");
     return 1;
   }
-  await relayOnline(options, api);
+  // only on: online waits until the account is named, which a relay asking for a pass needs first
+  await relayOn(options, api);
   const store = memoryAccountStore();
   const lock = memoryLock();
   const serviceFetch = options.serviceFetch ?? fetch;
@@ -274,7 +292,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   // the link page shows who is asking (docs/account.md, "Who is asking"): this PC's name and system
   const requester = { label: hostname(), os: accountOsOfPlatform(process.platform) };
   const startOptions = { service: options.accountService, store, lock, fetch: serviceFetch, now, wait, requester };
-  const signIn = offer !== null && offer.page.length > 0 ? await startLinkPageSignIn(startOptions, offer.device[0] ?? "github") : await startDeviceSignIn({ ...startOptions, provider: forced ?? "github" });
+  const signIn = offer !== null && offer.page.length > 0 ? await startLinkPageSignIn(startOptions, offer.device[0] ?? "github") : await startDeviceSignIn({ ...startOptions, provider: forced ?? offer?.device[0] ?? "github" });
   const provider = signIn.provider;
   out((provider === "ovis"
     ? [
@@ -300,6 +318,12 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   try {
     const first = await listThisPc(api, service, now, pending);
     if (pending.listing !== null) out(unlisted);
+    // a renewal's listing not put back yet goes back first: an account that does not list the PC gives it no pass
+    if (pending.listing !== null && await putListing(service, pending.listing)) { pending.listing = null; await nameRelayAccount(api, service); }
+    try { await relayOnline(options, api); } catch (error) {
+      if (!(error instanceof LocalError)) throw error;
+      throw new LocalError(`This PC stays listed in your account, but its Ovis relay is not online yet (${error.message}) Run this again once it is.`);
+    }
     const name = first.entry.label;
     let listedAt = now();
     out([

@@ -686,6 +686,36 @@ can be apart.
 - **Newer PC.** A PC newer than the app means the app's cached copy is out of date: the app checks
   for a newer version of itself and reloads, once.
 
+## Relay pass
+
+Ovis's own relays (`relay.ovis.sh` and the regional ones) may let in only PCs whose owner has an
+Ovis account. They check a **relay pass**, a short-lived token the account service signs for the PC
+([relay/README.md](../relay/README.md#relay-pass) has the format and the relay's side). Only the PC
+needs one: phones and browsers never sign in for the relay, pairing works as before, and the frames
+stay end-to-end encrypted. Direct connections on the same network or Tailscale, SSH, and a relay you
+run yourself need no account and no pass.
+
+- **Getting one** (`server/relay/pass.ts`). While its relay is one of Ovis's, the PC proves its relay
+  key to the account service (the `account` server proof, as for its mailbox) and asks
+  `POST /v1/pc/relay-pass` for a pass under an account: the account of its members
+  ([Linking devices with an account](account.md)), else the one its signed-in owner named with
+  `POST /api/account/relay-account` after adding the PC to that account. A pass the relay refuses
+  (`4402`, or `invalid`/`expired` in `sync`) is dropped and a new one asked for at once, at most once
+  a minute. The service gives one only
+  when that account lists the PC, so another account listing it neither charges nor blocks it.
+- **Keeping it.** The pass lasts 48 hours. The PC keeps it in `relay/pass.json` (readable by your user
+  only), so a restart or an account service outage costs nothing while it holds, and asks for the
+  next one after 12 hours, backing off (and honoring `Retry-After`) when the service does not answer.
+  A new pass goes to the relay on the open control socket; nothing reconnects.
+- **Sending it.** In the `x-ovis-relay-pass` header of every socket the PC opens to Ovis's relays,
+  never in the address, and never to any other relay (`OVIS_RELAY_URL` naming your own).
+- **When it is refused.** A relay that asks for a pass closes a PC socket without one `4402`. The PC
+  then stops reconnecting until it gets a pass, and reconnects as soon as it does. `GET /api/relay`
+  says where it stands in `pass`: `state` (`ok`, `no_account`, `not_listed`, `limit` or
+  `unavailable`), what the relay last said of it (`relay`), and from when the relay will need it
+  (`enforce_at`). `pass` is absent on a relay that is not Ovis's, and with
+  `OVIS_ACCOUNT_SERVICE_URL=off`.
+
 ## Operations
 
 The maintainer runs `relay.ovis.sh` and `app.ovis.sh` as a best effort, with no promise that either
@@ -809,11 +839,15 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   back by itself; 5 s to finish the handshake and
   15 s to sign in, and no message larger than one protected mux frame. Signed-in sessions count
   against one set of limits whichever way they came (relay links and direct carriers together):
-  eight at once and four per device key, whose oldest gives way. Peers outside private IPv4 are refused before upgrade, and on the Tailscale address
+  eight at once and four per device key, whose oldest gives way once the new one is used (its first stream): until
+  then it may be one of the app's racing carriers, which makes nothing give way, and past three of those for one
+  device key the oldest of them does. With every place taken, a device already at its share still gets a racing
+  carrier in (used, it replaces its own oldest), at most three past the limit in all. Peers outside private IPv4 are refused before upgrade, and on the Tailscale address
   every peer outside Tailscale's range (each listener takes only its own network's peers). Removing a device, stopping
   the relay, resetting its identity or turning direct connections off ends them.
 - **The app moves on its own.** An app with a socket for it (`RelayTransport` `directSocket`)
-  tries the PC's direct carriers first, all at once, each within 1.5 s, whenever it connects or
+  tries the PC's direct carriers first, two at a time (the plugins open no more), its first LAN and its
+  Tailscale one first, all within 1.5 s, whenever it connects or
   reconnects. When none is up within 300 ms it opens the relay too and keeps whichever channel is
   admitted first; the other attempt is ended, and a channel it still admits is closed without
   being reported as a lost carrier. The reconnect of a planned switch (below) does not open the
@@ -840,8 +874,8 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   `GET /api/devices` adds `connection` to a device with a session up, and `?check=1` (**Check now**)
   measures every session first, for at most 3 s. The phone's **Your PCs** list probes each saved PC
   the way the app would connect (no session is opened) and shows the same line. `/api/health` names the
-  listener to a client that got in (`lan_exposure` with `direct: true`), and the app's banner
-  says it in paired-only words. The open-server warning (`lanExposed`) is about the main listener
+  listener to a client that got in (`direct_exposure`, a field of its own: a 0.4.x app takes any
+  `lan_exposure` for an open server), and the app's banner says it in paired-only words. The open-server warning (`lanExposed`) is about the main listener
   only; starting the relay closes the pairing gate, so it never applies while this listener runs.
 - **On unless turned off.** `POST /api/relay/direct` with `{ "on": false }` turns it off (kept in
   `relay/direct.json`; a file that cannot be read counts as off); `GET /api/relay` says whether it is on and where it listens. Addresses are

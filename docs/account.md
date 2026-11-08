@@ -33,10 +33,11 @@ are ([Ovis Mux v1](relay.md#ovis-mux-v1)).
 6. **A signer adds only keys it checked itself**, by comparing digits or from a QR code, never a key
    the account service handed it.
 7. **The account service can hide records, never forge them.** It stores the PC directory
-   (`server_id` and a name, no keys), a mailbox of signed records per PC, and admission requests.
-8. **Tailscale is not membership.** **PCs on your Tailscale** ([remote-pcs.md](remote-pcs.md#through-the-relay))
-   adds a PC through the relay with a code that PC hands over to your own Tailscale login. That makes
-   it a paired device of that PC, never an account member by itself: membership comes only from the
+   (`server_id`, a name, the PC's relay public key and the relay it is reached through; no account
+   or device keys), a mailbox of signed records per PC, and admission requests.
+8. **Tailscale is not membership.** A PC found on your Tailscale is added over SSH (Add a connection →
+   SSH, [remote-pcs.md](remote-pcs.md)), and one an older Ovis added through the relay with a code that
+   PC handed over to your own Tailscale login is a paired device of that PC. Neither is an account member by itself: membership comes only from the
    rules here (a device linking its own pairing, or an approval by a member).
 
 ## Account members
@@ -217,6 +218,13 @@ With `?fresh=1` the PC first pulls its mailbox (a pull that starts after the req
 waiting there is counted, and adds `fresh`: true only when that pull read the whole mailbox
 without an error, for the PC's current account and relay identity. A PC whose account service is
 turned off (`off`) has no mailbox and answers `fresh: true`; one whose address is unusable does not.
+
+`POST /api/account/relay-account` `{ "account" }`: the account this PC asks its relay pass under while it
+has no members ([relay.md](relay.md#relay-pass)): over a direct connection with drive access (the PC's own
+screen, after it listed the PC), or through the relay only from a drive account member of that same
+account (`account_required` otherwise). Kept in `relay/account.json`; a
+name that is not an account id answers 400 `invalid_account`. Answers 204. Naming an account grants
+nothing: the service gives a pass only when that account lists the PC.
 
 `POST /api/account/link` `{ "record": <link> }`: the request's own device must be the record's
 `device_id`, with `old_key` its current key, `server_id` this PC's. The row's key becomes `key` and it
@@ -544,7 +552,7 @@ not the one it sent.
 `redirect_uri` is compared exactly against three forms: `https://app.ovis.sh/`,
 `ovis://account/callback`, and `http://127.0.0.1:<port>/callback` on any port (a loopback redirect
 for the desktop app, RFC 8252). Anything else answers 400 `invalid_redirect_uri` before any
-sign-in. The hosted shell's Content-Security-Policy lets it reach `https://account.ovis.sh` (`connect-src`), and no other account service yet. The PC's own pages may reach `https://account.ovis.sh` when `OVIS_ACCOUNT_SERVICE_URL` is unset, exactly the origin it names when it is https with a host name or IPv4 address, and no account service when it is `off` or not https.
+sign-in. The hosted shell is built with `https://account.ovis.sh` unless `OVIS_ACCOUNT_SERVICE_URL` names another https service (none when it is `off`), and its Content-Security-Policy lets it reach `https://account.ovis.sh` (`connect-src`), and no other account service yet. In a browser it offers sign-in only on `https://app.ovis.sh`, the one page the service sends a browser back to: the regional copy beside a relay, a preview or a local run offers none, and the phone app signs in through its own scheme anywhere. The PC's own pages may reach `https://account.ovis.sh` when `OVIS_ACCOUNT_SERVICE_URL` is unset, exactly the origin it names when it is https with a host name or IPv4 address, and no account service when it is `off` or not https.
 
 The desktop app offers sign-in in **Settings → Phone & devices** with `https://account.ovis.sh`
 unless `OVIS_ACCOUNT_SERVICE_URL` names another https service. `OVIS_ACCOUNT_SERVICE_URL=off`
@@ -631,9 +639,14 @@ row's ten minutes and deleted with it by the daily cleanup, so kept at most abou
 privacy policy ([ovis.sh/privacy](https://ovis.sh/privacy/#account)) lists them with everything
 else the service stores.
 
-The approval card (`AccountApprovalPrompt`) shows the admission's (`GET /v1/admissions`, the one
-for this PC and key, read from the account service and not from the PC) as "iOS · Near Seoul,
-South Korea", or "Location unknown", above "approve only if you started this yourself just now".
+The approval card (`AccountApprovalPrompt`) shows the admission's (`GET /v1/admissions`, the newest
+one for this PC and key, read from the account service and not from the PC) as "iOS · Network near
+Seoul, South Korea", or "Network location unknown", says that the name and system are what the
+device says and the place is where its network connects from, and asks to approve only a request
+the person started. Names are read as one plain line (no control or bidi characters, single spaces,
+48 UTF-16 units: the form a signed `add` takes). Approval goes ahead only for the admission the card
+showed: when the device asked again with another name, system or place, nothing is answered and the
+card shows the new details first.
 The link page's confirmation shows the PC's ("Asked by Desk (Linux), near Seoul, South Korea")
 with "continue only if you started this on your own PC".
 

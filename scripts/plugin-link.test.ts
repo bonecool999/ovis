@@ -56,6 +56,22 @@ function clock() {
 
 async function* answers(...lines: string[]): AsyncGenerator<string> { for (const line of lines) yield line; }
 
+/**
+ * A QR code drawn in the terminal, whatever it carries: its three finder squares, top left, top right and
+ * bottom left. The rest of the code follows its random payload, so no other run of blocks is certain.
+ */
+function expectQrCode(text: string): void {
+  const rows = text.split("\n");
+  const finder = ["█ █▀▀▀█ █", "█ █   █ █", "█ ▀▀▀▀▀ █"];
+  const top = rows.findIndex((row) => row.startsWith(finder[0]!));
+  // the quiet zone under the code: two module rows to a line, so its last line is all upper halves
+  const bottom = rows.findIndex((row, index) => index > top && /^▀+$/.test(row));
+  expect(top).toBeGreaterThan(0);
+  expect(bottom).toBeGreaterThan(top);
+  expect(rows.slice(top, top + 3).map((row) => [row.slice(0, 9), row.slice(-9)])).toEqual(finder.map((line) => [line, line]));
+  expect(rows.slice(bottom - 3, bottom).map((row) => row.slice(0, 9))).toEqual(finder);
+}
+
 describe("ovis link, on the PC itself", () => {
   it("refuses a server that is not on this machine, before asking it anything", async () => {
     const pc = localPc(() => Response.json({}));
@@ -99,8 +115,8 @@ describe("ovis link, on the PC itself", () => {
     expect(text).toContain("ABCD-EFGH-JK");
     expect(text).toContain("MNPQ-RSTV-WX");
     expect(text).toContain(pc.server_id.match(/.{4}/g)!.join(" "));
-    // drawn as a QR code in the terminal: block characters, one line per module row
-    expect(text).toMatch(/█{4,}/);
+    // drawn as a QR code in the terminal: block characters, two module rows to a line
+    expectQrCode(text);
     // renewed when the pair ran out, as the Settings view does, and the code taken back on the way out
     expect(time.waits).toEqual([600_000]);
     expect(cancelled).toBe(1);
@@ -187,24 +203,27 @@ describe("ovis link, on the PC itself", () => {
     expect(await link(["--code"], { origin: ORIGIN, headers: {}, fetch: local.fetch, out: (text) => out.push(text), signal: stop.signal, lines: answers(), accountService: SERVICE })).toBe(0);
     const text = out.join("");
     expect(text).toContain("No code to type");
-    expect(text).toMatch(/█{4,}/);
+    expectQrCode(text);
     expect(text).toContain(pc.server_id.match(/.{4}/g)!.join(" "));
     // the QR code's own six-digit code is taken back too
     expect(cancelled).toBe(1);
   });
 
   /** `link` against a PC that a phone adds once the PC is signed in; `approve` plays the person finishing the sign-in shown. */
-  async function linkToAccount(options: { args?: string[]; prepare?: (service: FakeAccountService) => void; approve: (service: FakeAccountService, code: string) => void }) {
+  async function linkToAccount(options: { args?: string[]; prepare?: (service: FakeAccountService) => void; approve: (service: FakeAccountService, code: string) => void; enforcing?: boolean }) {
     const pc = identity();
     const time = clock();
     const service = new FakeAccountService(time.now);
     options.prepare?.(service);
     let account: string | null = null;
     let linkAsked = 0;
+    let named: string | null = null;
     const decisions: unknown[] = [];
     const local = localPc(async (request, path) => {
       if (path === "/api/account/status") return Response.json({ account, unlinked: [], removals: [], adds: [], blocked: [] });
-      if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
+      // a relay asking for a pass refuses this PC until it named its account
+      if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: options.enforcing && named === null ? "error" : "online", blocked: null });
+      if (path === "/api/account/relay-account") { named = (await request.json() as { account: string }).account; return new Response(null, { status: 204 }); }
       if (path === "/api/relay/link") {
         // approved on this PC only, as the add-me screen asks
         expect(request.headers.get("x-ovis-local-only")).toBe("1");
@@ -229,7 +248,7 @@ describe("ovis link, on the PC itself", () => {
         if (shown) options.approve(service, shown[1]!);
       },
     });
-    return { code, text: out.join(""), service, pc, decisions };
+    return { code, text: out.join(""), service, pc, decisions, named };
   }
 
   it("signs in with the device flow, lists this PC in the account and approves the device that adds it after a number compare", async () => {
@@ -243,6 +262,13 @@ describe("ovis link, on the PC itself", () => {
     expect(text).toContain("This PC is in your account");
   });
 
+  it("links a PC whose Ovis relay asks for a pass: it signs in and names its account before waiting for the relay", async () => {
+    const { code, text, named, decisions } = await linkToAccount({ enforcing: true, approve: (service, shown) => service.approveDevice(shown, "acct_1") });
+    expect([code, named]).toEqual([0, "acct_1"]);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
+    expect(text).toContain("This PC is in your account");
+  });
+
   it("shows the Ovis link page and its code, with a QR code, when the account service has it", async () => {
     const { code, text, service } = await linkToAccount({
       prepare: (service) => service.offerLinkPage(["github", "google"]),
@@ -251,7 +277,7 @@ describe("ovis link, on the PC itself", () => {
     expect(code).toBe(0);
     expect(text).toContain(`${SERVICE}/link`);
     expect(text).not.toContain("github.com/login/device");
-    expect(text).toMatch(/█{4,}/);
+    expectQrCode(text);
     expect(service.pcs("acct_1")).toHaveLength(1);
   });
 
@@ -276,6 +302,15 @@ describe("ovis link, on the PC itself", () => {
     const { code, text } = await linkToAccount({
       args: ["--google"],
       prepare: (service) => service.offerLinkPage(["github", "google"]),
+      approve: (service, shown) => service.approveDevice(shown, "acct_1"),
+    });
+    expect(code).toBe(0);
+    expect(text).toContain("https://www.google.com/device");
+  });
+
+  it("uses the device page the service offers when it has no link page", async () => {
+    const { code, text } = await linkToAccount({
+      prepare: (service) => service.offer(["google"], ["google"]),
       approve: (service, shown) => service.approveDevice(shown, "acct_1"),
     });
     expect(code).toBe(0);

@@ -7,7 +7,7 @@
  * the providers the service says it offers get a button. Elsewhere, and with the account off, none
  * of this.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { listThisPc, thisPcInNoAccount } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
@@ -43,7 +43,7 @@ const RELIST_MS = 9 * 60_000;
  * This PC, signed in and in no account yet: listed in the account with one tap, then it waits for a
  * device already in the account to add it, which the owner approves here (docs/account.md, "Adding a PC").
  */
-function AddThisPc() {
+function AddThisPc({ relayAbove = true }: { /** Settings has the relay's switch above; the welcome does not */ relayAbove?: boolean } = {}) {
   const t = useT();
   const [state, setState] = useState<{ kind: "hidden" } | { kind: "offer" } | { kind: "waiting"; name: string } | { kind: "error"; message: string }>({ kind: "hidden" });
   /** Reopens the window while this PC still waits; once a device added it, the screen is done and stops. */
@@ -67,7 +67,8 @@ function AddThisPc() {
     listThisPc(new AccountService({ store: indexedAccountStore }), { relistMs: RELIST_MS }).then((name) => setState({ kind: "waiting", name }), (error: unknown) => {
       console.warn("Ovis: this PC was not listed in the account", error instanceof Error ? error.name : error);
       setState({ kind: "error", message: error instanceof ApiError && error.code === "relay_off"
-        ? t("Turn on remote access through the Ovis relay above first.") : t("This PC could not be listed in your account. Try again.") });
+        ? relayAbove ? t("Turn on remote access through the Ovis relay above first.") : t("Turn on remote access through the Ovis relay in Settings → Devices and PCs first.")
+        : t("This PC could not be listed in your account. Try again.") });
     });
   };
   if (state.kind === "hidden") return null;
@@ -89,8 +90,59 @@ function AddThisPc() {
   );
 }
 
+/**
+ * A fetch for the account service's first request that reports whether the service can be reached: an answer
+ * other than a server error says it can (offeredProviders falls back quietly on any).
+ */
+export function reachabilityProbe(report: (reachable: boolean) => void, fetchImpl: typeof fetch = fetch): (input: Request | string | URL, init?: RequestInit) => Promise<Response> {
+  return async (input, init) => {
+    try {
+      const response = await fetchImpl(input, init);
+      // a server error (a 503 while it is down or restarting) is no service to sign in to
+      report(response.status < 500);
+      return response;
+    } catch (error) {
+      report(false);
+      throw error;
+    }
+  };
+}
+
+/** the waits before asking an account service that did not answer again: soon at first, then once a minute */
+export const REPROBE_MS = [5_000, 15_000, 60_000] as const;
+
+interface ReprobeTimers { set: (run: () => void, ms: number) => unknown; clear: (handle: unknown) => void }
+const windowTimers: ReprobeTimers = { set: (run, ms) => setTimeout(run, ms), clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>) };
+
+/**
+ * Asks `probe` until it says the account service can be reached, waiting REPROBE_MS between tries (the last one
+ * repeats), so the sign-in comes back once a service that was down answers again. The function returned stops it.
+ */
+export function probeUntilReachable(probe: (live: () => boolean) => Promise<boolean>, timers: ReprobeTimers = windowTimers): () => void {
+  let live = true;
+  let handle: unknown = null;
+  let tries = 0;
+  const run = async (): Promise<void> => {
+    handle = null;
+    const reachable = await probe(() => live).catch(() => false);
+    if (!live || reachable) return;
+    handle = timers.set(() => void run(), REPROBE_MS[Math.min(tries, REPROBE_MS.length - 1)]!);
+    tries += 1;
+  };
+  void run();
+  return () => {
+    live = false;
+    if (handle !== null) timers.clear(handle);
+    handle = null;
+  };
+}
+
 /** What Settings → Devices and PCs needs of the account: signed in or not, and the account's PCs for My devices. */
-export interface AccountState { signedIn: boolean; account: string | null; pcs: MyPc[] | null }
+export interface AccountState {
+  signedIn: boolean; account: string | null; pcs: MyPc[] | null;
+  /** false once the account service did not answer: the relay tab then offers the relay's own pairing (ConnectPhoneDialog) */
+  reachable: boolean;
+}
 
 /** the phone and Mac apps sign in their own way, never with a code from a PC's page */
 const pcServiceHere = (): string | null => desktopAccount() === null && !inNativeApp() && !inMacApp() ? pcAccountServiceOf(document, window.isSecureContext) : null;
@@ -98,8 +150,18 @@ const pcServiceHere = (): string | null => desktopAccount() === null && !inNativ
 /** whether this page can sign in to the account: the desktop app's bridge, or the account service a PC's page names */
 export const accountOffered = (): boolean => desktopAccount() !== null || pcServiceHere() !== null;
 
+/**
+ * The first-run welcome's sign-in (components/SetupGuide.tsx): the same sign-in in a box of its own,
+ * with the guide's own line above it and its Not now below; once signed in, Add this PC.
+ */
+export interface WelcomeAccount { lead: ReactNode; later: ReactNode }
+
 /** `onAccount`: the page lists the account's PCs itself (My devices), so this group does not */
-export function AccountSection({ onAccount }: { onAccount?: (state: AccountState) => void } = {}) {
+export function AccountSection({ onAccount, welcome, recheck = 0 }: {
+  onAccount?: (state: AccountState) => void; welcome?: WelcomeAccount;
+  /** bumped to ask the account service again now (Settings bumps it when Add a connection opens) */
+  recheck?: number;
+} = {}) {
   const t = useT();
   const bridge = desktopAccount();
   const pcService = pcServiceHere();
@@ -107,17 +169,28 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
   const [view, setView] = useState<View>({ kind: "loading" });
   const fallback: AccountProvider[] = bridge ? desktopProviders(bridge) : ["github"];
   const [offer, setOffer] = useState<OfferedProviders | null>(null);
+  const [unreachable, setUnreachable] = useState(false);
   /** a change to the ways in that waits for a fresh sign-in (403 reauth_required) */
   const [reauth, setReauth] = useState<{ action: "add" | "remove"; provider: AccountProvider } | null>(null);
   const deviceSignIn = useRef<AbortController | null>(null);
+  // the sign-in a device code actually started: the link page's, or a provider's own when it fell back
+  const startedProvider = useRef<DeviceSignInProvider | null>(null);
   const service = bridge?.service ?? pcService;
   const fallbackKey = fallback.join(",");
   useEffect(() => {
     if (service === null) return;
-    let live = true;
-    offeredProviders(service, fallbackKey.split(",") as AccountProvider[]).then((offered) => { if (live) setOffer(offered); }, (error: unknown) => console.warn("Ovis: the account service's sign-ins could not be read", error instanceof Error ? error.name : error));
-    return () => { live = false; };
-  }, [service, fallbackKey]);
+    return probeUntilReachable(async (live) => {
+      let reachable = true;
+      const probe = reachabilityProbe((answer) => { reachable = answer; if (live()) setUnreachable(!answer); });
+      try {
+        const offered = await offeredProviders(service, fallbackKey.split(",") as AccountProvider[], { fetch: probe });
+        if (live()) setOffer(offered);
+      } catch (error) {
+        console.warn("Ovis: the account service's sign-ins could not be read", error instanceof Error ? error.name : error);
+      }
+      return reachable;
+    });
+  }, [service, fallbackKey, recheck]);
   /** the desktop app comes back over loopback with any provider; a PC's page only through a device flow */
   const providers: AccountProvider[] = bridge !== null ? offer?.providers ?? fallback : offer?.device ?? ["github"];
   /** a PC's page whose service has the Ovis link page: one button, GitHub or Google chosen on the link page */
@@ -148,8 +221,8 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
 
   useEffect(() => { if (offered) void load(); }, [offered, load]);
   useEffect(() => {
-    onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null });
-  }, [onAccount, view]);
+    onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null, reachable: !unreachable });
+  }, [onAccount, view, unreachable]);
   // closing Settings ends a device sign-in still waiting: its session is then never kept
   useEffect(() => () => { deviceSignIn.current?.abort(); loads.current++; }, []);
 
@@ -163,15 +236,18 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     deviceSignIn.current = null;
   };
 
-  const failureText = (error: unknown, provider: AccountProvider): string => {
-    const name = PROVIDER_NAMES[provider];
-    if (error instanceof AccountServiceError && error.code === "identity_exists") return t("Your account already signs in with {provider}.", { provider: name });
+  /** `provider` null: the link page, where the person picked GitHub or Google themselves, so the text names neither */
+  const failureText = (error: unknown, provider: AccountProvider | null): string => {
+    const name = provider === null ? null : PROVIDER_NAMES[provider];
+    if (error instanceof AccountServiceError && error.code === "identity_exists" && name !== null) return t("Your account already signs in with {provider}.", { provider: name });
     if (!(error instanceof SignInError)) return t("The sign-in did not finish. Try again.");
     switch (error.code) {
-      case "denied": return t("{provider} refused the sign-in.", { provider: name });
+      case "denied": return name === null ? t("The sign-in was refused.") : t("{provider} refused the sign-in.", { provider: name });
       case "expired": return t("The code expired. Sign in again to get a new one.");
       case "unsupported": return t("This account service can't sign in a browser on this PC yet.");
-      case "in_use": return t("This {provider} sign-in already belongs to another Ovis account. Nothing was changed.", { provider: name });
+      case "in_use": return name === null
+        ? t("This sign-in already belongs to another Ovis account. Nothing was changed.")
+        : t("This {provider} sign-in already belongs to another Ovis account. Nothing was changed.", { provider: name });
       case "no_sign_in": return t("The sign-in did not finish. Try again.");
     }
   };
@@ -182,6 +258,7 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     const controller = new AbortController();
     deviceSignIn.current = controller;
     setView({ kind: "device-code", provider, userCode: null, verificationUri: "", verificationUriComplete: null });
+    startedProvider.current = null;
     return (async () => {
       const requester = { label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
       const started = provider === "ovis"
@@ -189,6 +266,7 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
         ? await startLinkPageSignIn({ service: pcServiceOrigin, store: indexedAccountStore, requester }, offer?.device[0] ?? "github")
         : await startDeviceSignIn({ service: pcServiceOrigin, store: indexedAccountStore, provider, requester });
       controller.signal.throwIfAborted();
+      startedProvider.current = started.provider;
       setView({ kind: "device-code", provider: started.provider, userCode: started.userCode, verificationUri: started.verificationUri, verificationUriComplete: started.verificationUriComplete });
       return started.finish(controller.signal);
     })().finally(() => { if (deviceSignIn.current === controller) deviceSignIn.current = null; });
@@ -212,7 +290,10 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
       // cancelled, or Settings closed: the page already moved on
       if (error instanceof DOMException && error.name === "AbortError") return;
       console.warn("Ovis: the sign-in did not finish", error instanceof SignInError ? error.code : error instanceof Error ? error.name : error);
-      setView({ kind: "signed-out", error: failureText(error, provider) });
+      // the link page named no provider (the person picked one there); its fallback to a provider's own page did
+      const started = startedProvider.current;
+      const named = bridge === null && pcService !== null && linkPage ? (started === null || started === "ovis" ? null : started) : provider;
+      setView({ kind: "signed-out", error: failureText(error, named) });
     });
   };
 
@@ -276,8 +357,8 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
       .finally(() => setView({ kind: "signed-out", error: null }));
   };
 
-  return (
-    <SettingsGroup title={t("Account")} section="account">
+  const signInParts = (
+    <>
       {view.kind === "signed-out" && (
         <div className="settings-item" data-offer={offer === null ? "build" : "service"}>
           {linkPage
@@ -321,6 +402,26 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
           </div>
         </div>
       )}
+    </>
+  );
+
+  if (welcome !== undefined) {
+    // signed out, the buttons wait for the service's own list: the build's fallback could offer one it lacks
+    if (view.kind === "loading" || (view.kind === "signed-out" && offer === null)) return null;
+    return (
+      <div className="setup-signin">
+        {view.kind === "signed-in"
+          ? <><p className="setup-signin-done" role="status">{t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })}</p><AddThisPc relayAbove={false} /></>
+          : <>{welcome.lead}{signInParts}</>}
+        {/* signed out only: a sign-in under way ends with its own Cancel, never folded away unnoticed by Not now */}
+        {view.kind === "signed-out" && welcome.later}
+      </div>
+    );
+  }
+
+  return (
+    <SettingsGroup title={t("Account")} section="account">
+      {signInParts}
       {view.kind === "signed-in" && (
         <>
           <SettingsRow label={t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })}>

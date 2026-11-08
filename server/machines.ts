@@ -27,9 +27,10 @@ import { WAITING_FOR_WINDOWS_LOGIN } from "./windows-herdr-start.ts";
 import { decodeOffer, SERVER_ID_PATTERN, isWssOrigin, type RelayOffer } from "../shared/relay-offer.ts";
 import { offerFromCode, TypedCodeError } from "../shared/relay-code-offer.ts";
 import { TailnetPcError, TailnetPcs, type TailnetPcsOptions } from "./tailnet-pcs.ts";
+import { sshCandidates, type SshCandidatesOptions } from "./ssh-candidates.ts";
 
 import type { RelaySocket } from "../shared/relay-channel.ts";
-import { openRelayPcTunnel, RelayPcKey, RelayPcRefused, relayPcLabel, removeRelayPcKey, type RelayPcTunnel } from "./relay-pc.ts";
+import { newRouteProbes, openRelayPcTunnel, RelayPcKey, RelayPcRefused, relayPcLabel, removeRelayPcKey, type RelayPcTunnel, type RouteProbes } from "./relay-pc.ts";
 import type { HcMachine, MachineBridge } from "./herdr-core/machine-bridge.ts";
 
 /** a PC keeps the six-digit code in its offer for 10 minutes at most (server/devices.ts) */
@@ -42,6 +43,8 @@ interface Runtime {
   ssh?: SshConnection;
   /** a PC added through the relay: its connection and loopback forward (server/relay-pc.ts) */
   tunnel?: RelayPcTunnel;
+  /** when its earlier routes were last probed, kept across its tunnels (relay-pc.ts RouteProbes) */
+  routeProbes?: RouteProbes;
   /** another machine of this PC's herdr-core (kind "hc"): what the core calls it, and its server once started (herdr-core/machine-bridge.ts) */
   hc?: { id: string; name: string; bridge?: MachineBridge };
   endpoint?: { url: string; token: string };
@@ -327,11 +330,14 @@ export class MachineManager {
   private serverId?: () => string | undefined;
   /** other PCs of this PC's Tailscale login, added through the relay with one tap (server/tailnet-pcs.ts) */
   private readonly tailnet: TailnetPcs;
+  /** where the SSH tab's list is read from (server/ssh-candidates.ts) */
+  private readonly sshCandidateOptions: SshCandidatesOptions;
 
   constructor(readonly stateDir: string, private push: PushService, private completions: CompletionTracker, private readLocal: () => Promise<SessionSnapshot> = () => this.completions.readSnapshot(sessionSnapshot, labelOmoPanes),
-    options: { bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number }; relaySocket?: (url: string) => RelaySocket; relayDirectSocket?: (url: string) => RelaySocket; serverId?: () => string | undefined; tailnet?: TailnetPcsOptions } = {}) {
+    options: { bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number }; relaySocket?: (url: string) => RelaySocket; relayDirectSocket?: (url: string) => RelaySocket; serverId?: () => string | undefined; tailnet?: TailnetPcsOptions; sshCandidates?: SshCandidatesOptions } = {}) {
     this.bootId = options.bootId;
     this.tailnet = new TailnetPcs(options.tailnet);
+    this.sshCandidateOptions = options.sshCandidates ?? (options.tailnet?.readStatus === undefined ? {} : { readStatus: options.tailnet.readStatus });
     this.serverId = options.serverId;
     this.relaySocket = options.relaySocket;
     this.relayDirectSocket = options.relayDirectSocket;
@@ -1473,6 +1479,7 @@ export class MachineManager {
       ...(this.relaySocket ? { socket: this.relaySocket } : {}), ...(this.relayDirectSocket ? { directSocket: this.relayDirectSocket } : {}),
       onLost: (error) => this.lost(runtime, generation, error),
       onMoved: () => this.moved(runtime, generation),
+      probes: runtime.routeProbes ??= newRouteProbes(),
     };
   }
   /**
@@ -1777,6 +1784,11 @@ export class MachineManager {
   /** the relay IDs of the PCs added through the relay */
   private relayServerIds(): Set<string> {
     return new Set([...this.machines.values()].flatMap(({ machine }) => machine.relay ? [machine.relay.server_id] : []));
+  }
+
+  /** Settings → Add a connection → SSH: the ssh config's hosts and this login's Tailscale PCs, to add over SSH. */
+  listSshCandidates() {
+    return sshCandidates(this.sshCandidateOptions);
   }
 
   /** Settings → Connect a device → PCs on your Tailscale: those not added yet (server/tailnet-pcs.ts). */

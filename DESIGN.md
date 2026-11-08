@@ -1265,8 +1265,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   drawer closing. Escape in a field with words clears them and leaves the drawer open; the empty
   field's Escape is the drawer's. Nothing focuses the field by itself, and nothing typed elsewhere reaches it, so a
   terminal keeps every keystroke; the command palette's **Filter workspaces and agents** opens the drawer or the
-  sidebar and focuses it. Settings → Appearance → **Sidebar filter** (on by default, this device's choice, kept in its own
-  `ovis:sidebar-filter` key as the PC fold is) leaves the row out, so the lists start at the top, as the Codex and
+  sidebar and focuses it. Settings → Appearance → **Sidebar filter** (off by default, this device's choice, kept in its own
+  `ovis:sidebar-filter-shown` key, a new one: the earlier `ovis:sidebar-filter` held the old default on every device that saved any setting, so it is not read) leaves the row out, so the lists start at the top, as the Codex and
   Claude apps keep search in the palette alone; that palette entry then draws the row, focused, for the filter's time.
   It stays while it holds words, and goes on its **Close filter** (its X while it is empty), Escape in it empty (that
   Escape goes no further), leaving the sidebar while it is empty: a press outside it, or the keyboard's focus going
@@ -1328,15 +1328,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`ovis:agents-collapsed`) and wins over that default on the next launch; a filter's fold does
   not persist. Until the PCs are in and each connected PC's panes have come, an empty list says
   **Loading agents…**, never "No agents running".
-- The resize line needs a fixed target to fold PCs to, so their roster gets a **PCs** head, also
-  for a lone Host. It folds only this section, not its Agents, and keeps the fold on this device
-  (`ovis:pcs-collapsed`); under a filter the fold is temporary. Its rows stay mounted while hidden
-  so their branch labels remain searchable. This head comes out of the PCs' allocation; it does
-  not shrink Agents' default allocation. The **PCs** and **Agents** heads are drawn alike
-  (`.sidebar-section-label`): the fold's caret in the leading cell, always in view, open or
-  folded, so a head reads as a fold at rest; the dim words; and in the trailing cell how many PCs
-  this device shows or how many agents run, open or folded, as VS Code's view heads count theirs. The PCs count says its words (**2 PCs shown**) to a screen
-  reader and in its tooltip, never a bare number. The first PC starts right under the head.
+- The PCs' list has no head of its own: it starts right under the logo, as the Codex and Claude
+  apps' sidebars start with their threads, and with two PCs or more each PC's own header names it.
+  So the PCs never fold as a section (each PC still folds by its header); the resize line stops at
+  their minimum instead (below). The **Agents** head (`.sidebar-section-label`) keeps the fold's
+  caret in the leading cell, always in view, open or folded, so it reads as a fold at rest; the dim
+  words; and in the trailing cell how many agents run, open or folded, as VS Code's view heads count theirs.
 - Between the lists is a resize line (`SidebarSplit.tsx`, `role="separator"`): a `--border`
   hairline in its own hit area, `--border-strong` on hover, `--accent` while held or focused.
   A grip shows on hover and always under a finger. Dragging gives the upper section its chosen
@@ -1344,10 +1341,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   The default layout and saved-split clamp share measured minimums: both sections keep a heading
   and a row when they fit. In a very short window they share the available room instead, with
   overflow clipped inside each section so neither its controls nor its rows cover the divider
-  or footer. A drag-to-fold preview can still shrink either section to its heading.
-  Double-click or Enter resets to today's default split. ↑/↓ moves the line a row; Home folds
-  the upper section and End the lower. Dragging a section below about one row snaps it to its
-  heading and dims it; release folds it with the same fold as its caret. Reopening restores its
+  or footer. A drag-to-fold preview can still shrink Agents to its heading.
+  Double-click or Enter resets to today's default split. ↑/↓ moves the line a row; Home and End fold
+  Agents on its side, and on the PCs' side take the PCs to their minimum. Dragging Agents below about one row snaps it to its
+  heading and dims it; release folds it with the same fold as its caret. The PCs, with no heading, stop at a row and never snap. Reopening restores its
   saved height. A drag opens a folded section first. The reset follows [Zed's Agent panel](https://zed.dev/docs/reference/all-settings#flexible-sizing),
   whose resize handle restores the default proportion on double-click. The fold follows VS Code's
   resizable sidebar views and macOS split views (Mail, Finder); Ovis's width divider is the local
@@ -1387,15 +1384,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   its own `ovis:hidden-pcs` key, like the fold): it leaves the PC groups, the Agents list and the
   command palette, stays connected, and a link or an alert to its pane still opens that pane. The
   list shows when there are two PCs or more, the Host first; the last PC shown cannot be hidden, and
-  hiding the PC the selection is on moves it to the Host, else the first PC shown. The PCs head says
-  how many are hidden here, after its words: a quiet `--text-dim` pill (`.sidebar-hidden-pcs`), an eye
-  crossed out and the count, named in words (**1 PC hidden on this device**), a touch target on a phone.
-  It opens a menu, a sheet on a phone, headed **Hidden on this device** with a note that a hidden PC
-  stays connected, that shows each PC again in place (**Show Work PC**), in the roster's order, or goes
-  to that Settings group (**Choose PCs in Settings…**). Showing one follows the switch's rules and moves
-  no selection; showing the last takes the pill away, and the focus it held goes to the PCs head's fold,
-  not the page; so does the focus of an open menu whose last PC the roster or another tab takes away.
-  VS Code's view heads list the views hidden there to show again the same way. The banner of
+  hiding the PC the selection is on moves it to the Host, else the first PC shown. The sidebar says
+  nothing of the PCs hidden here (it has no PCs head to say it in): that Settings group lists them, switched off,
+  and shows one again in place. Showing one moves no selection. The banner of
   a PC that needs setup or a bridge update still shows for a hidden PC: it asks for an action. herdr's
   TUI shows one session at a time and Orca hides other clients' workspaces; Ovis shows every PC of
   the roster, so the choice is per PC and per device, not a sidebar switch.
@@ -1711,8 +1702,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   for a field (up to 100 characters, its text selected): Enter saves, and Escape or a click away keeps the old name;
   Enter and Escape give the focus back to the manage button, and on a phone that Escape leaves the drawer out. Remove PC… asks in the dialog a workspace's Close asks
   in (`ConfirmDialog`), which says only the registration goes and shows a failure in place. Hide on this device
-  follows Show in sidebar's rules: the last PC shown has no such item, and the focus goes to the line under the PCs
-  that says how many are hidden. A PC herdr manages keeps herdr's limits: no Rename…, Disconnect or Remove PC…, and
+  follows Show in sidebar's rules: the last PC shown has no such item, and the focus goes to the PC list's first row
+  that takes it, not the page. A PC herdr manages keeps herdr's limits: no Rename…, Disconnect or Remove PC…, and
   the head says to do those in herdr. A machine of herdr-core (`kind: "hc"`) offers only Hide on this device, and its
   head says to add, rename or remove it with `hc machine` or in the Herdr app. A PC added through the relay has no Reconnect / setup or Update bridge…, and its
   Remove PC… dialog says to revoke its access under Phone & devices on that PC too. Reconnect / setup is left out while the PC's own notice offers setup or
@@ -3696,33 +3687,30 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - My devices (`MyPcRows` in SettingsDialog.tsx, then `components/DevicesPanel.tsx`): this PC
   first (its name, a **This PC** pill in the accent and its relay ID in `--font-mono` under it: the
   ID a device that typed this PC's code compares, so it is shown here and not in the dialog), then
-  the PCs this app shows (a neutral **PC** pill and their state; removing an eligible PC stays in
-  the sidebar's PC menu), then signed in the account's other PCs (their
-  account state, no action), then the paired phones and browsers with a neutral kind pill (Phone,
+  the PCs this app shows (a neutral **PC** pill and their state; one that is not connected is
+  dimmed, and one this app added over SSH or the relay carries a **Remove PC** trash button that asks
+  once, as the sidebar's PC menu does), then signed in the account's other PCs (their
+  account state, dimmed unless ready, no action), then the paired phones and browsers with a neutral kind pill (Phone,
   Tablet or Browser, read from the name the app first gave the device), Rename and Revoke as
   before, then **Revoke every device**. On a touch phone on this PC's own address, with the relay
   online, the phone's own row carries **Use the relay** (its own offer opens there). **Sign out of
   this PC** (the browser's own pairing) and the account's **Sign out of GitHub** are named apart.
-- Connect a device (`components/ConnectPhoneDialog.tsx`, a `.modal`, a bottom sheet on a phone):
-  signed in to the account, with this PC in it and the relay online, it asks the new device to
-  sign in with GitHub and be approved once on a device already in the account (the approval is
-  the account's own prompt, picking the number out of three, on that device: never on the PC's
-  own windows) and shows no code until **Connect with a code (no sign-in)**. Otherwise one way
-  first: the Ovis relay's QR code and the code to type side by side (`components/CompactPair.tsx`,
-  132px QR, the code in `--font-mono`), with only **Refresh** and **Copy**; signed out where the
-  account is offered, one bordered line above it says signing in skips the code. While the relay
-  is not online its state sentence shows instead, with its switch for the PC's owner (and the gate
-  condition), a failed start's reason and **Try again**; a watching device or Portal visitor reads
-  the state and that only the owner controls the relay. **Enter a code from another device** opens
-  the typed-code form for a PC that shows its own code (the ID match step as before). **Other ways
-  to connect** folds the rest, one bordered line each that opens under itself: **Same Wi-Fi** (the
-  six-digit pairing code and its QR code, Refresh and Copy), **Tailscale** (the address and QR
-  code, or the command to run), **Portal** (where the server offers it: the whole Portal group as
-  before) and **Add a PC over SSH** (closes Settings and opens the PC setup dialog). With no relay
-  offered the six-digit code is the first way. The dialog closes by itself once My devices sees the
-  device a code let in. A six-digit code started anywhere ends the relay's typed code on the PC,
-  so that code goes and Refresh makes another; it is never asked for on its own, or the two would
-  keep ending each other.
+- Add a connection (`components/ConnectPhoneDialog.tsx`, a `.modal`, a bottom sheet on a phone) follows
+  herdr's own **Add a machine** sheet: one tab per way across the top (the `.segmented` primitive,
+  as FilesDialog's tabs), and under each the things that way found, each with one action, then a
+  field to type one. **SSH** (only for the PC's owner on its own page) lists the PCs saved in herdr
+  (**Connect**), the server's ssh config hosts and its Tailscale login's PCs, one row each: the name,
+  the address dim and ellipsized (under the name on a phone), a neutral pill for where it was found
+  (herdr, ssh config, Tailscale), then **Add** or a quiet **Added** in the done green; **Add** and the
+  typed address close Settings and open the PC setup dialog with the address filled in. **Phones and
+  devices** stacks, under a hairline each, the Tailscale address and QR code, the six-digit pairing
+  code (`components/CompactPair.tsx`, started when the tab first opens) and Portal where the server
+  offers it. **Ovis relay** is the account's: signed out one sentence and **Sign in to Ovis** (which
+  opens the account's sign-in in More settings), signed in how a new device joins, or the relay's
+  switch and **Open the account** while this PC cannot admit one yet. Relay pairing without the
+  account, a code from another PC and Tailscale PCs added through the relay are gone from it. A phone
+  opens on Phones and devices, a PC's window on SSH; a tab once opened stays mounted, so its code
+  is not minted again. The dialog closes by itself once My devices sees the device a code let in.
 - The Ovis relay's own group in More settings: its state as the row's sentence with the switch,
   then **Reset relay identity** (confirmed in the shared `ConfirmDialog`; none for a serve-only
   install, which refuses it). Not shown in the hosted shell or to a read-only device.
@@ -3734,7 +3722,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and **Forget this PC** (a neutral button that asks once in a `ConfirmDialog`, **Forget**, then
   deletes this phone's key for the PC and leaves for the front page). Neither is destructive on the
   PC, which keeps listing the phone until it is revoked there, so neither is a `.btn-danger`.
-- Portal, under Connect a device's Other ways to connect where the server offers it: while it runs,
+- Portal, in Add a connection's Phones and devices tab where the server offers it: while it runs,
   the address and QR code as the Tailscale way draws them over a Relay row with Stop; otherwise one
   hint for what blocks it (no token, serve-only, no `portal` or an old one, with a link to get it)
   or a wide Relay row whose text field and Start stack on a phone. Starting and stopping are one
@@ -4389,8 +4377,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   phone that pairs through the relay and one that pairs with a code see the same room. Neither
   the Codex nor the Claude app has a hosted relay shell to follow.
 - Account part (components/AccountPcs.tsx, lib/account/), only on the front page and only when
-  the page names an account service (`<meta name="ovis-account-service">`); without one the front
-  page is the saved-PC list above, unchanged. Signed out: **Continue with GitHub** and **Continue
+  the page names an account service (`<meta name="ovis-account-service">`, account.ovis.sh unless
+  the build names another) and, in a browser, it is app.ovis.sh, the one page a sign-in comes back
+  to; otherwise the front page is the saved-PC list above, unchanged. Signed out: **Continue with GitHub** and **Continue
   with Apple**, two equal neutral `.btn`s (App Review 4.8 wants Apple wherever another provider
   is, and neither is the one to pick), a `--fs-xs` dim line on what the account service learns,
   then the QR route under a hairline (an `h2`, the page keeps one `h1`). With saved PCs the list
